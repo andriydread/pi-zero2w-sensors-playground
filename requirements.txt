@@ -1,3 +1,17 @@
-pyserial
-adafruit-circuitpython-scd4x
-adafruit-blinka
+# pyserial
+# adafruit-circuitpython-scd4x
+# adafruit-blinka
+# spidev
+# Pillow
+# RPi.GPIO
+# adafruit-circuitpython-uc8253
+# adafruit-circuitpython-typing
+# adafruit-blinka-displayio
+
+RPi.GPIO
+spidev
+Pillow
+numpy
+gpiozero
+pigpio
+rpi-lgpio

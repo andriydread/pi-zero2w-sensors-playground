@@ -1,3 +1,7 @@
+# Protect the virtual environment on the Pi from being deleted
+
+P .venv/
+
 # Virtual environment
 
 - .venv/
