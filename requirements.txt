@@ -1,0 +1,3 @@
+pyserial
+adafruit-circuitpython-scd4x
+adafruit-blinka

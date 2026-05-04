@@ -1,0 +1,18 @@
+# Virtual environment
+
+- .venv/
+- venv/
+
+# git metadata
+
+- .git/
+
+# Python cache files
+
+- **pycache**/
+- \*.pyc
+
+# Filter file and local-only files
+
+- .rsync-filter
+- .DS_Store
