@@ -2,32 +2,56 @@ import time
 
 import RPi.GPIO as GPIO
 import spidev
-from PIL import Image, ImageDraw
 
 
 class UC8253C:
-    def __init__(self, spi_bus=0, spi_device=0, busy_pin=24, rst_pin=17, dc_pin=25):
-        self.width = 240
-        self.height = 416
-        self.busy_pin = busy_pin
+    # --- UC8253C Command Table ---
+    PANEL_SETTING = 0x00
+    POWER_SETTING = 0x01
+    POWER_OFF = 0x02
+    POWER_ON = 0x04
+    DEEP_SLEEP = 0x07
+    DATA_START_TRANSMISSION_1 = 0x10  # RAM1 (Previous Data)
+    DISPLAY_REFRESH = 0x12
+    DATA_START_TRANSMISSION_2 = 0x13  # RAM2 (New Data)
+    VCOM_AND_DATA_INTERVAL_SETTING = 0x50
+
+    # Physical resolution in Landscape
+    WIDTH = 416
+    HEIGHT = 240
+
+    def __init__(self, rst_pin=17, dc_pin=25, busy_pin=24, spi_bus=0, spi_device=0):
         self.rst_pin = rst_pin
         self.dc_pin = dc_pin
+        self.busy_pin = busy_pin
 
-        # Match C driver: Buffer initialized to 0xFF (White)
-        self.last_buffer = bytearray([0xFF] * (self.width * self.height // 8))
+        # State tracking
+        self._is_initialized = False
+        self._is_sleeping = True
 
-        self.spi = spidev.SpiDev()
-        self.spi.open(spi_bus, spi_device)
-        self.spi.max_speed_hz = 4000000
-        self.spi.mode = 0b00
+        # Initialize SPI
+        try:
+            self.spi = spidev.SpiDev()
+            self.spi.open(spi_bus, spi_device)
+            self.spi.max_speed_hz = 4000000
+            self.spi.mode = 0b00
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize SPI: {e}")
 
+        # Initialize GPIO
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.busy_pin, GPIO.IN)
         GPIO.setup(self.rst_pin, GPIO.OUT)
         GPIO.setup(self.dc_pin, GPIO.OUT)
 
-    def _send_command(self, command: int):
+        # Pre-allocate buffers to save memory/time
+        self.buffer_size = (self.WIDTH * self.HEIGHT) // 8
+        self.buffer_old = bytearray([0xFF] * self.buffer_size)
+
+    # --- Communication Methods ---
+
+    def _send_command(self, command):
         GPIO.output(self.dc_pin, GPIO.LOW)
         self.spi.writebytes([command])
 
@@ -36,111 +60,132 @@ class UC8253C:
         if isinstance(data, int):
             self.spi.writebytes([data])
         else:
+            # writebytes2 handles large bytearrays efficiently
             self.spi.writebytes2(data)
 
-    def wait_until_idle(self):
-        """Standard Busy check."""
-        time.sleep(0.02)  # Short gap for hardware to react
+    def wait_until_idle(self, timeout_secs=5):
+        """
+        Wait for Busy pin to go High (1).
+        Safety check: Prevent infinite loop if hardware fails.
+        """
+        start = time.time()
         while GPIO.input(self.busy_pin) == 0:
             time.sleep(0.01)
+            if (time.time() - start) > timeout_secs:
+                raise TimeoutError("Display busy timeout: Check wiring or power.")
 
     def reset(self):
+        """Standard Hardware Reset"""
+        GPIO.output(self.rst_pin, GPIO.HIGH)
+        time.sleep(0.05)
         GPIO.output(self.rst_pin, GPIO.LOW)
         time.sleep(0.02)
         GPIO.output(self.rst_pin, GPIO.HIGH)
-        time.sleep(0.02)
+        time.sleep(0.15)
+        self.wait_until_idle()
 
-    def _set_ram_pointer(self):
-        """CRITICAL: Resets the internal RAM cursor to (0,0)."""
-        self._send_command(0x65)
-        self._send_data(0x00)  # X = 0
-        self._send_data(0x00)  # Y High = 0
-        self._send_data(0x00)  # Y Low = 0
+    # --- Power/Init Methods ---
 
     def init(self):
+        """Wake up and configure the display."""
         self.reset()
+
+        self._send_command(self.POWER_ON)
         self.wait_until_idle()
-        self._send_command(0x04)  # Power ON
-        self.wait_until_idle()
-        self._send_command(0x00)  # Panel Setting
+
+        self._send_command(self.PANEL_SETTING)
         self._send_data(0x1F)
         self._send_data(0x0D)
-        self._send_command(0x50)
+
+        self._send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
         self._send_data(0x97)
 
-    def init_partial(self):
-        self.init()
-        self._send_command(0xE0)
-        self._send_data(0x02)
-        self._send_command(0xE5)
-        self._send_data(0x6E)
-        self._send_command(0x50)
-        self._send_data(0xD7)
+        self._is_initialized = True
+        self._is_sleeping = False
+        return 0
 
-    def display(self, image: Image.Image):
-        # Rotate if landscape
-        if image.width == self.height and image.height == self.width:
-            image = image.rotate(90, expand=True)
+    def display(self, image):
+        """Validates and sends image data to the display."""
+        # Safety Check: Initialization
+        if not self._is_initialized or self._is_sleeping:
+            raise RuntimeError("Display must be initialized via init() before use.")
 
-        image_bw = image.convert("1", dither=Image.NONE)
-        new_buffer = bytearray(image_bw.tobytes())
+        # Safety Check: Image Dimensions
+        if image.width != self.WIDTH or image.height != self.HEIGHT:
+            raise ValueError(
+                f"Image must be {self.WIDTH}x{self.HEIGHT} for Landscape mode."
+            )
 
-        # 1. Write Old Data to 0x10 (Reset pointer first!)
-        self._set_ram_pointer()
-        self._send_command(0x10)
-        self._send_data(self.last_buffer)
+        # Internal conversion (Landscape to RAM Portrait)
+        rotated_image = image.rotate(90, expand=True)
+        image_bw = rotated_image.convert("1")
+        current_buffer = bytearray(image_bw.tobytes())
 
-        # 2. Write New Data to 0x13 (Reset pointer again!)
-        self._set_ram_pointer()
-        self._send_command(0x13)
-        self._send_data(new_buffer)
+        # Differential Update
+        self._send_command(self.DATA_START_TRANSMISSION_1)
+        self._send_data(self.buffer_old)
 
-        # 3. Update memory
-        self.last_buffer = new_buffer
+        self._send_command(self.DATA_START_TRANSMISSION_2)
+        self._send_data(current_buffer)
 
-        # 4. Refresh
-        self._send_command(0x12)
+        self._send_command(self.DISPLAY_REFRESH)
         self.wait_until_idle()
+
+        # Update tracking buffer
+        self.buffer_old = current_buffer
 
     def sleep(self):
-        self._send_command(0x02)
+        """Safely power down and enter deep sleep."""
+        if self._is_sleeping:
+            return
+
+        self._send_command(self.POWER_OFF)
         self.wait_until_idle()
-        self._send_command(0x07)
+        self._send_command(self.DEEP_SLEEP)
         self._send_data(0xA5)
 
+        self._is_sleeping = True
+        self._is_initialized = False
 
-# --- EXECUTION ---
+    def close(self):
+        """Final cleanup of resources."""
+        if not self._is_sleeping:
+            self.sleep()
+        self.spi.close()
+        GPIO.cleanup([self.rst_pin, self.dc_pin, self.busy_pin])
+
+
+# --- Basic Landscape Test ---
 if __name__ == "__main__":
-    try:
-        epd = UC8253C()
-        L_WIDTH, L_HEIGHT = 416, 240
+    from PIL import Image, ImageDraw
 
-        print("1. Full Refresh")
+    epd = UC8253C()
+
+    try:
+        print("Init...")
         epd.init()
-        image = Image.new("1", (L_WIDTH, L_HEIGHT), 255)
+
+        print("Drawing in Landscape (416x240)...")
+        # Create image in Landscape
+        image = Image.new("1", (epd.WIDTH, epd.HEIGHT), 255)
         draw = ImageDraw.Draw(image)
-        draw.rectangle((0, 0, L_WIDTH - 1, L_HEIGHT - 1), outline=0, width=4)
-        draw.text((135, 80), "STABLE PARTIAL", fill=0)
+
+        # Draw a border around the landscape edge
+        draw.rectangle((0, 0, 415, 239), outline=0, width=2)
+
+        # Center text
+        draw.text((150, 110), "LANDSCAPE MODE", fill=0)
+
+        # Draw a horizontal line
+        draw.line((20, 200, 396, 200), fill=0, width=2)
+
+        print("Updating Display...")
         epd.display(image)
 
-        print("2. Switching to Partial Mode")
-        epd.init_partial()
-
-        for i in range(1, 11):
-            print(f"Frame {i}")
-            image = Image.new("1", (L_WIDTH, L_HEIGHT), 255)
-            draw = ImageDraw.Draw(image)
-            draw.rectangle((0, 0, L_WIDTH - 1, L_HEIGHT - 1), outline=0, width=4)
-            draw.text((135, 80), "STABLE PARTIAL", fill=0)
-            draw.text((165, 120), f"COUNT: {i:02d}", fill=0)
-
-            epd.display(image)
-            time.sleep(0.1)
-
-        print("3. Done")
+        print("Done. Sleeping.")
         epd.sleep()
 
     except Exception as e:
         print(f"Error: {e}")
     finally:
-        GPIO.cleanup()
+        epd.close()
