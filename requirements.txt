@@ -15,3 +15,5 @@ numpy
 gpiozero
 pigpio
 rpi-lgpio
+adafruit-circuitpython-epd 
+adafruit-blinka

@@ -37,11 +37,11 @@ class UC8253C:
 
     def reset(self):
         GPIO.output(RST_PIN, GPIO.HIGH)
-        time.sleep(0.1)
+        time.sleep(0.01)  # 0.1 def
         GPIO.output(RST_PIN, GPIO.LOW)
         time.sleep(0.01)
         GPIO.output(RST_PIN, GPIO.HIGH)
-        time.sleep(0.1)
+        time.sleep(0.01)  # 0.1 def
 
     def init(self):
         print("Hardware Reset...")
