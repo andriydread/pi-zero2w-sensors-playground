@@ -14,9 +14,9 @@ class UC8253C:
     POWER_OFF = 0x02
     POWER_ON = 0x04
     DEEP_SLEEP = 0x07
-    DATA_START_1 = 0x10  # SRAM Bank 1
+    DATA_START_1 = 0x10
     DISPLAY_REFRESH = 0x12
-    DATA_START_2 = 0x13  # SRAM Bank 2
+    DATA_START_2 = 0x13
     VCOM_AND_DATA_INTERVAL_SETTING = 0x50
     CASCADE_SETTING = 0xE0
     FORCE_TEMPERATURE = 0xE5
@@ -32,15 +32,11 @@ class UC8253C:
 
         self._initialized = False
         self._sleeping = True
-
-        # Ping-Pong Buffer Tracker
         self._is_swapped = False
 
-        # Software Buffer: 30 bytes * 416 lines = 12480 bytes
         self.buffer_size = (self.WIDTH * self.HEIGHT) // 8
         self.buffer_old = bytearray([0xFF] * self.buffer_size)
 
-        # Initialize SPI
         try:
             self.spi = spidev.SpiDev()
             self.spi.open(spi_bus, spi_device)
@@ -49,20 +45,15 @@ class UC8253C:
         except Exception as e:
             raise RuntimeError(f"SPI Initialization Failed: {e}")
 
-        # Initialize GPIO
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.busy_pin, GPIO.IN)
         GPIO.setup(self.rst_pin, GPIO.OUT)
         GPIO.setup(self.dc_pin, GPIO.OUT)
 
-    # --- Communication ---
-
     def _write(self, cmd, data=None):
-        """Unified command/data sender."""
         GPIO.output(self.dc_pin, GPIO.LOW)
         self.spi.writebytes([cmd])
-
         if data is not None:
             GPIO.output(self.dc_pin, GPIO.HIGH)
             if isinstance(data, int):
@@ -70,11 +61,9 @@ class UC8253C:
             elif isinstance(data, list):
                 self.spi.writebytes(data)
             else:
-                # Highly optimized for large bytearrays
                 self.spi.writebytes2(data)
 
     def wait_until_idle(self, timeout_secs=15):
-        """Busy Logic: 0 is Busy, 1 is Idle."""
         time.sleep(0.02)
         start = time.time()
         while GPIO.input(self.busy_pin) == 0:
@@ -84,23 +73,19 @@ class UC8253C:
         time.sleep(0.02)
 
     def reset(self):
-        """Hardware reset."""
         GPIO.output(self.rst_pin, GPIO.LOW)
         time.sleep(0.05)
         GPIO.output(self.rst_pin, GPIO.HIGH)
         time.sleep(0.05)
-
-        # A hardware reset forces the internal ping-pong back to default
         self._is_swapped = False
         self._sleeping = False
 
-    # --- Mode Initialization ---
+    # --- Modes ---
 
     def init(self):
-        """Full Refresh Initialization."""
+        """Full Refresh Initialization. Flashes the screen. Clears ghosting."""
         self.reset()
         self.wait_until_idle()
-
         self._write(self.POWER_ON)
         self.wait_until_idle()
 
@@ -109,29 +94,30 @@ class UC8253C:
 
         self._initialized = True
         self._sleeping = False
-
         self.clear_screen()
 
     def init_fast(self):
-        """Fast Refresh Settings."""
+        """Fast Refresh (1.5s). Flashes once."""
         if not self._initialized or self._sleeping:
             self.init()
 
-        # Trick the hardware into using the 1.5s OTP waveform by faking the temperature
-        self._write(self.CASCADE_SETTING, 0x02)  # TSFIX = 1 (Use manual temperature)
-        self._write(
-            self.FORCE_TEMPERATURE, 0x5F
-        )  # Fake temperature mapping to Fast LUT
+        self._write(self.CASCADE_SETTING, 0x02)
+        self._write(self.FORCE_TEMPERATURE, 0x5F)  # LUT: Fast
+        self._write(self.VCOM_AND_DATA_INTERVAL_SETTING, 0xD7)
 
-        # 0xD7 keeps correct polarity but sets Border Data to 'Floating'
-        # This stops the edge of the screen from flashing black during fast refresh
+    def init_partial(self):
+        """Partial Refresh (~0.3s). NO flashing. Only updates changed pixels."""
+        if not self._initialized or self._sleeping:
+            self.init()
+
+        self._write(self.CASCADE_SETTING, 0x02)
+        self._write(self.FORCE_TEMPERATURE, 0x6E)  # LUT: Partial
+        # 0xD7 ensures the border remains floating so the edges don't blink
         self._write(self.VCOM_AND_DATA_INTERVAL_SETTING, 0xD7)
 
     def clear_screen(self):
         """Forces hardware RAM to match software 'All White' state."""
         white = bytearray([0xFF] * self.buffer_size)
-
-        # Respect the ping-pong state just in case it's called mid-execution
         cmd_old = self.DATA_START_2 if self._is_swapped else self.DATA_START_1
         cmd_new = self.DATA_START_1 if self._is_swapped else self.DATA_START_2
 
@@ -141,14 +127,10 @@ class UC8253C:
         self.wait_until_idle()
 
         self.buffer_old = white
-
-        # Every call to DISPLAY_REFRESH swaps the internal hardware banks
         self._is_swapped = not self._is_swapped
 
-    # --- Display Logic ---
-
     def display(self, image):
-        """Updates display using differential comparison and ping-pong tracking."""
+        """Standard display method. Works universally for Full, Fast, and Partial."""
         if not self._initialized or self._sleeping:
             raise RuntimeError("Display must be initialized via init() first.")
         if image.width != self.WIDTH or image.height != self.HEIGHT:
@@ -157,13 +139,12 @@ class UC8253C:
         rotated = image.rotate(90, expand=True)
         current_buffer = bytearray(rotated.convert("1").tobytes())
 
-        # Correctly assign NEW and OLD data to the hardware banks based on the toggle
         if self._is_swapped:
-            cmd_old = self.DATA_START_2  # 0x13 is now the OLD bank
-            cmd_new = self.DATA_START_1  # 0x10 is now the NEW bank
+            cmd_old = self.DATA_START_2
+            cmd_new = self.DATA_START_1
         else:
-            cmd_old = self.DATA_START_1  # 0x10 is OLD
-            cmd_new = self.DATA_START_2  # 0x13 is NEW
+            cmd_old = self.DATA_START_1
+            cmd_new = self.DATA_START_2
 
         self._write(cmd_old, self.buffer_old)
         self._write(cmd_new, current_buffer)
@@ -171,7 +152,6 @@ class UC8253C:
         self._write(self.DISPLAY_REFRESH)
         self.wait_until_idle()
 
-        # Update software tracking
         self.buffer_old = current_buffer
         self._is_swapped = not self._is_swapped
 
@@ -202,25 +182,55 @@ if __name__ == "__main__":
     epd = UC8253C()
 
     try:
-        print("Init and Syncing RAM (Full Refresh)...")
+        print("1. Booting up with a Full Refresh to clear the screen...")
         epd.init()
 
-        print("Switching to Fast Mode...")
-        epd.init_fast()
-
+        # Draw a static background template
         img = Image.new("1", (epd.WIDTH, epd.HEIGHT), 255)
         draw = ImageDraw.Draw(img)
 
-        # You will now see 1, 2, 3, 4, 5, 6 flawlessly!
-        for i in range(1, 7):
-            print(f"Iteration {i}/6")
-            draw.rectangle((0, 0, epd.WIDTH, epd.HEIGHT), fill=255)
-            draw.text((150, 110), f"FAST ITERATION: {i}", fill=0)
+        draw.rectangle((10, 10, epd.WIDTH - 10, epd.HEIGHT - 10), outline=0, width=3)
+        draw.text((130, 40), "PARTIAL REFRESH DEMO", fill=0)
 
-            epd.display(img)
-            time.sleep(0.5)
+        # Display the template using FULL refresh
+        epd.display(img)
 
-        print("Done. Entering sleep mode to protect display...")
+        # ---------------------------------------------------------
+        print("2. Switching to Partial Mode...")
+        epd.init_partial()
+
+        # Let's run a rapid counter and progress bar update!
+        max_count = 15
+
+        for i in range(1, max_count + 1):
+            print(f"Partial Update: {i}/{max_count}")
+
+            # Create a completely fresh white image every loop
+            # (Don't worry, the display() method will compare it to the old one natively)
+            frame = Image.new("1", (epd.WIDTH, epd.HEIGHT), 255)
+            frame_draw = ImageDraw.Draw(frame)
+
+            # Re-draw the static background
+            frame_draw.rectangle(
+                (10, 10, epd.WIDTH - 10, epd.HEIGHT - 10), outline=0, width=3
+            )
+            frame_draw.text((130, 40), "PARTIAL REFRESH DEMO", fill=0)
+
+            # Draw the dynamic changing text
+            frame_draw.text((160, 100), f"COUNT: {i}", fill=0)
+
+            # Draw a dynamic progress bar
+            bar_width = int((i / max_count) * (epd.WIDTH - 100))
+            frame_draw.rectangle((50, 150, 50 + bar_width, 180), fill=0)
+            frame_draw.rectangle((50, 150, epd.WIDTH - 50, 180), outline=0, width=2)
+
+            # Update the screen (Only the text and the bar will physically change!)
+            epd.display(frame)
+
+            # Minimal sleep just to see it
+            time.sleep(0.1)
+
+        print("Done! Entering sleep mode...")
         epd.sleep()
 
     except Exception as e:
