@@ -5,20 +5,23 @@ import spidev
 
 
 class UC8253C:
-    # --- UC8253C Command Table (Ref: WeAct C Driver) ---
+    """
+    Python Driver for WeAct 3.7" 240x416 E-Paper Display (UC8253C).
+    """
+
+    # --- UC8253C Command Registers ---
     PANEL_SETTING = 0x00
     POWER_OFF = 0x02
     POWER_ON = 0x04
     DEEP_SLEEP = 0x07
-    DATA_START_OLD = 0x10  # RAM1
+    DATA_START_1 = 0x10  # SRAM Bank 1
     DISPLAY_REFRESH = 0x12
-    DATA_START_NEW = 0x13  # RAM2
+    DATA_START_2 = 0x13  # SRAM Bank 2
     VCOM_AND_DATA_INTERVAL_SETTING = 0x50
-    SET_RAM_ADDRESS = 0x65  # Reset internal cursors
-    POWER_SAVING = 0xE0
-    SET_SPEED = 0xE5
+    CASCADE_SETTING = 0xE0
+    FORCE_TEMPERATURE = 0xE5
 
-    # Physical Dimensions (Landscape)
+    # Physical Dimensions
     WIDTH = 416
     HEIGHT = 240
 
@@ -30,11 +33,18 @@ class UC8253C:
         self._initialized = False
         self._sleeping = True
 
-        # Initialize SPI (CS is handled by spidev)
+        # Ping-Pong Buffer Tracker
+        self._is_swapped = False
+
+        # Software Buffer: 30 bytes * 416 lines = 12480 bytes
+        self.buffer_size = (self.WIDTH * self.HEIGHT) // 8
+        self.buffer_old = bytearray([0xFF] * self.buffer_size)
+
+        # Initialize SPI
         try:
             self.spi = spidev.SpiDev()
             self.spi.open(spi_bus, spi_device)
-            self.spi.max_speed_hz = 2000000
+            self.spi.max_speed_hz = 4000000
             self.spi.mode = 0b00
         except Exception as e:
             raise RuntimeError(f"SPI Initialization Failed: {e}")
@@ -46,121 +56,127 @@ class UC8253C:
         GPIO.setup(self.rst_pin, GPIO.OUT)
         GPIO.setup(self.dc_pin, GPIO.OUT)
 
-        # Buffer: 30 bytes * 416 lines = 12480 bytes
-        self.buffer_size = (self.WIDTH * self.HEIGHT) // 8
-        self.buffer_old = bytearray([0xFF] * self.buffer_size)
-
-    # --- Communication Methods ---
+    # --- Communication ---
 
     def _write(self, cmd, data=None):
-        """Unified command/data sender matching the C _epd_write_data logic."""
+        """Unified command/data sender."""
         GPIO.output(self.dc_pin, GPIO.LOW)
         self.spi.writebytes([cmd])
+
         if data is not None:
             GPIO.output(self.dc_pin, GPIO.HIGH)
             if isinstance(data, int):
                 self.spi.writebytes([data])
+            elif isinstance(data, list):
+                self.spi.writebytes(data)
             else:
-                # Use large chunks as seen in C driver (4096 bytes)
+                # Highly optimized for large bytearrays
                 self.spi.writebytes2(data)
 
     def wait_until_idle(self, timeout_secs=15):
-        """Busy Logic: 0 is Busy, 1 is Idle. Matches epd_wait_busy in C."""
-        time.sleep(0.02)  # Lead time
+        """Busy Logic: 0 is Busy, 1 is Idle."""
+        time.sleep(0.02)
         start = time.time()
         while GPIO.input(self.busy_pin) == 0:
             time.sleep(0.01)
             if (time.time() - start) > timeout_secs:
                 raise TimeoutError("EPD Hardware Busy Timeout.")
-        time.sleep(0.02)  # Settle time
+        time.sleep(0.02)
 
     def reset(self):
-        """Hardware reset matching epd_reset in C."""
+        """Hardware reset."""
         GPIO.output(self.rst_pin, GPIO.LOW)
         time.sleep(0.05)
         GPIO.output(self.rst_pin, GPIO.HIGH)
         time.sleep(0.05)
-        self.wait_until_idle()
 
-    def set_cursor(self, x, y):
-        """Resets RAM pointer using command 0x65 (Found in C epd_setpos)."""
-        # x is byte-index (0-29), y is pixel-index (0-415)
-        self._write(self.SET_RAM_ADDRESS, [x & 0xFF, (y >> 8) & 0x01, y & 0xFF])
+        # A hardware reset forces the internal ping-pong back to default
+        self._is_swapped = False
+        self._sleeping = False
 
-    # --- Power/Mode Methods ---
+    # --- Mode Initialization ---
 
     def init(self):
-        """Full Refresh Initialization matching epd_init in C."""
+        """Full Refresh Initialization."""
         self.reset()
+        self.wait_until_idle()
 
         self._write(self.POWER_ON)
         self.wait_until_idle()
 
-        # Panel Setting: 0x1F, 0x0D
         self._write(self.PANEL_SETTING, [0x1F, 0x0D])
-
-        # CDI: 0x97
         self._write(self.VCOM_AND_DATA_INTERVAL_SETTING, 0x97)
-
-        # Sync-Clear: Clears chip memory to White to match Python buffer_old
-        # This prevents the "Odd-Iteration Skip"
-        self.clear_screen()
 
         self._initialized = True
         self._sleeping = False
 
+        self.clear_screen()
+
     def init_fast(self):
-        """Fast Refresh Settings matching epd_init_fast in C."""
-        if not self._initialized:
+        """Fast Refresh Settings."""
+        if not self._initialized or self._sleeping:
             self.init()
-        self._write(self.POWER_SAVING, 0x02)
-        self._write(self.SET_SPEED, 0x5F)  # 1.5s refresh
-        # CDI 0x17 or 0xD7 are standard for fast/partial
-        self._write(self.VCOM_AND_DATA_INTERVAL_SETTING, 0x17)
+
+        # Trick the hardware into using the 1.5s OTP waveform by faking the temperature
+        self._write(self.CASCADE_SETTING, 0x02)  # TSFIX = 1 (Use manual temperature)
+        self._write(
+            self.FORCE_TEMPERATURE, 0x5F
+        )  # Fake temperature mapping to Fast LUT
+
+        # 0xD7 keeps correct polarity but sets Border Data to 'Floating'
+        # This stops the edge of the screen from flashing black during fast refresh
+        self._write(self.VCOM_AND_DATA_INTERVAL_SETTING, 0xD7)
 
     def clear_screen(self):
         """Forces hardware RAM to match software 'All White' state."""
         white = bytearray([0xFF] * self.buffer_size)
-        self.set_cursor(0, 0)
-        self._write(self.DATA_START_OLD, white)
-        self.set_cursor(0, 0)
-        self._write(self.DATA_START_NEW, white)
+
+        # Respect the ping-pong state just in case it's called mid-execution
+        cmd_old = self.DATA_START_2 if self._is_swapped else self.DATA_START_1
+        cmd_new = self.DATA_START_1 if self._is_swapped else self.DATA_START_2
+
+        self._write(cmd_old, white)
+        self._write(cmd_new, white)
         self._write(self.DISPLAY_REFRESH)
         self.wait_until_idle()
+
         self.buffer_old = white
+
+        # Every call to DISPLAY_REFRESH swaps the internal hardware banks
+        self._is_swapped = not self._is_swapped
 
     # --- Display Logic ---
 
     def display(self, image):
-        """Updates display using differential comparison and cursor resets."""
-        # Safety Checks
+        """Updates display using differential comparison and ping-pong tracking."""
         if not self._initialized or self._sleeping:
             raise RuntimeError("Display must be initialized via init() first.")
         if image.width != self.WIDTH or image.height != self.HEIGHT:
             raise ValueError(f"Image must be {self.WIDTH}x{self.HEIGHT}.")
 
-        # 1. Process Image (Landscape 416x240 -> Portrait 240x416 RAM)
         rotated = image.rotate(90, expand=True)
         current_buffer = bytearray(rotated.convert("1").tobytes())
 
-        # 2. Reset Pointer and Write Old Data
-        self.set_cursor(0, 0)
-        self._write(self.DATA_START_OLD, self.buffer_old)
+        # Correctly assign NEW and OLD data to the hardware banks based on the toggle
+        if self._is_swapped:
+            cmd_old = self.DATA_START_2  # 0x13 is now the OLD bank
+            cmd_new = self.DATA_START_1  # 0x10 is now the NEW bank
+        else:
+            cmd_old = self.DATA_START_1  # 0x10 is OLD
+            cmd_new = self.DATA_START_2  # 0x13 is NEW
 
-        # 3. Reset Pointer and Write New Data
-        # Without this, New Data starts writing at the bottom of RAM!
-        self.set_cursor(0, 0)
-        self._write(self.DATA_START_NEW, current_buffer)
+        self._write(cmd_old, self.buffer_old)
+        self._write(cmd_new, current_buffer)
 
-        # 4. Trigger Refresh
         self._write(self.DISPLAY_REFRESH)
         self.wait_until_idle()
 
-        # 5. Snapshot for next comparison
-        self.buffer_old = bytearray(current_buffer)
+        # Update software tracking
+        self.buffer_old = current_buffer
+        self._is_swapped = not self._is_swapped
 
     def sleep(self):
-        """Deep sleep sequence matching epd_enter_deepsleepmode in C."""
+        """Deep sleep sequence."""
         if self._sleeping:
             return
         self._write(self.POWER_OFF)
@@ -179,31 +195,33 @@ class UC8253C:
         GPIO.cleanup([self.rst_pin, self.dc_pin, self.busy_pin])
 
 
-# --- Main Logic ---
+# --- USAGE EXAMPLE ---
 if __name__ == "__main__":
     from PIL import Image, ImageDraw
 
     epd = UC8253C()
 
     try:
-        print("Init and Syncing RAM...")
+        print("Init and Syncing RAM (Full Refresh)...")
         epd.init()
 
         print("Switching to Fast Mode...")
         epd.init_fast()
 
-        img = Image.new("1", (416, 240), 255)
+        img = Image.new("1", (epd.WIDTH, epd.HEIGHT), 255)
         draw = ImageDraw.Draw(img)
 
+        # You will now see 1, 2, 3, 4, 5, 6 flawlessly!
         for i in range(1, 7):
             print(f"Iteration {i}/6")
-            draw.rectangle((0, 0, 416, 240), fill=255)
-            draw.text((150, 110), f"ITERATION: {i}", fill=0)
-            epd.display(img)
-            time.sleep(0.1)
+            draw.rectangle((0, 0, epd.WIDTH, epd.HEIGHT), fill=255)
+            draw.text((150, 110), f"FAST ITERATION: {i}", fill=0)
 
+            epd.display(img)
+            time.sleep(0.5)
+
+        print("Done. Entering sleep mode to protect display...")
         epd.sleep()
-        print("Done.")
 
     except Exception as e:
         print(f"Error: {e}")
