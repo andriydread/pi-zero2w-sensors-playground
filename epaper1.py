@@ -1,120 +1,91 @@
 import time
 
-import RPi.GPIO as GPIO
-import spidev
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
-# Pin Definitions (BCM)
-BUSY_PIN = 24
-RST_PIN = 17
-DC_PIN = 25
-CS_PIN = 8
+from uc8253c import UC8253C
 
 
-class UC8253C:
-    def __init__(self):
-        # Physical resolution of the glass
-        self.width = 240
-        self.height = 416
+def main():
+    # Initialize display in Landscape mode
+    with UC8253C(rotation=90) as display:
+        print("1. Waking up and clearing screen...")
+        display.clear()
 
-        self.spi = spidev.SpiDev()
-        self.spi.open(0, 0)
-        self.spi.max_speed_hz = 4000000
-        self.spi.mode = 0b00
+        # --- FONT SETUP ---
+        # We load a standard system font. Size 24 is much larger than default.
+        # If this path fails on your specific OS, it will fall back to default.
+        try:
+            font_large = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30
+            )
+            font_small = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18
+            )
+        except:
+            print("Warning: Custom font not found, using default.")
+            font_large = ImageFont.load_default()
+            font_small = ImageFont.load_default()
 
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(BUSY_PIN, GPIO.IN)
-        GPIO.setup(RST_PIN, GPIO.OUT)
-        GPIO.setup(DC_PIN, GPIO.OUT)
+        # ---------------------------------------------------------
+        # FULL REFRESH DEMO
+        # ---------------------------------------------------------
+        print("2. Setting mode to Full Refresh...")
+        display.set_full_refresh()
 
-    def _send_command(self, command):
-        GPIO.output(DC_PIN, GPIO.LOW)
-        self.spi.writebytes([command])
+        img = Image.new("1", (display.width, display.height), 255)
+        draw = ImageDraw.Draw(img)
 
-    def _send_data(self, data):
-        GPIO.output(DC_PIN, GPIO.HIGH)
-        if isinstance(data, int):
-            self.spi.writebytes([data])
-        else:
-            self.spi.writebytes2(data)
+        # 1px line at the absolute edge of the screen
+        draw.rectangle(
+            (0, 0, display.width - 1, display.height - 1), outline=0, width=1
+        )
 
-    def wait_until_idle(self):
-        while GPIO.input(BUSY_PIN) == 0:
-            time.sleep(0.01)
+        # Inner decorative border
+        draw.rectangle(
+            (10, 10, display.width - 11, display.height - 11), outline=0, width=2
+        )
 
-    def reset(self):
-        GPIO.output(RST_PIN, GPIO.HIGH)
-        time.sleep(0.1)
-        GPIO.output(RST_PIN, GPIO.LOW)
-        time.sleep(0.01)
-        GPIO.output(RST_PIN, GPIO.HIGH)
-        time.sleep(0.1)
+        # Large Text (Centered roughly)
+        draw.text((60, 100), "FULL REFRESH", fill=0, font=font_large)
 
-    def init(self):
-        self.reset()
-        self._send_command(0x04)  # Power ON
-        self.wait_until_idle()
-        self._send_command(0x00)  # Panel Setting
-        self._send_data(0x1F)
-        self._send_command(0x50)  # VCOM and Data Interval
-        self._send_data(0x97)
+        display.update(img)
+        time.sleep(2)
 
-    def display(self, image):
-        """
-        Expects a 1-bit PIL image.
-        If the image is landscape (416x240), it rotates it to fit portrait (240x416).
-        """
-        # If the user passed a landscape image, rotate it 90 degrees to fit the buffer
-        if image.width == 416:
-            image = image.rotate(90, expand=True)
+        # ---------------------------------------------------------
+        # PARTIAL REFRESH DEMO
+        # ---------------------------------------------------------
+        print("3. Setting mode to Partial Refresh...")
+        display.set_partial_refresh()
 
-        image_bw = image.convert("1")
-        buffer = bytearray(image_bw.tobytes())
+        for i in range(1, 11):
+            print(f"   Partial Update {i}/10")
 
-        self._send_command(0x13)  # New Data
-        self._send_data(buffer)
-        self._send_command(0x12)  # Refresh
-        self.wait_until_idle()
+            frame = Image.new("1", (display.width, display.height), 255)
+            frame_draw = ImageDraw.Draw(frame)
 
-    def sleep(self):
-        self._send_command(0x50)
-        self._send_data(0xF7)
-        self._send_command(0x02)
-        self.wait_until_idle()
-        self._send_command(0x07)
-        self._send_data(0xA5)
+            # 1px absolute edge line
+            frame_draw.rectangle(
+                (0, 0, display.width - 1, display.height - 1), outline=0, width=1
+            )
+
+            # Inner decorative border
+            frame_draw.rectangle(
+                (10, 10, display.width - 11, display.height - 11), outline=0, width=2
+            )
+
+            # Dynamic text with the large font
+            frame_draw.text((70, 80), "PARTIAL COUNT", fill=0, font=font_small)
+            frame_draw.text((160, 110), str(i), fill=0, font=font_large)
+
+            display.update(frame)
+            time.sleep(0.1)
+
+        # ---------------------------------------------------------
+        # SLEEPING
+        # ---------------------------------------------------------
+        print("4. Putting display to sleep...")
+        display.sleep()
 
 
-# --- EXECUTION ---
-
-try:
-    epd = UC8253C()
-    epd.init()
-
-    # Create a LANDSCAPE canvas (Width=416, Height=240)
-    # We swap the height and width here
-    L_WIDTH, L_HEIGHT = 416, 240
-    image = Image.new("1", (L_WIDTH, L_HEIGHT), 255)
-    draw = ImageDraw.Draw(image)
-
-    # Now drawing is intuitive:
-    # 0,0 is top-left of the long edge
-    draw.rectangle((0, 0, 415, 239), outline=0, width=2)
-
-    # Center some text
-    draw.text((150, 110), "LANDSCAPE MODE", fill=0)
-
-    # Draw a line across the bottom
-    draw.line((20, 200, 396, 200), fill=0, width=2)
-
-    print("Updating display in landscape...")
-    epd.display(image)
-
-    print("Success! Entering sleep...")
-    epd.sleep()
-
-except Exception as e:
-    print(f"Error: {e}")
-finally:
-    GPIO.cleanup()
+if __name__ == "__main__":
+    main()
