@@ -4,140 +4,128 @@ from sps30 import SPS30
 
 
 def get_aqi_and_category(pm25):
-    """
-    Calculates the US EPA Air Quality Index (AQI) based on PM2.5 concentration.
-    Returns a tuple: (AQI_integer, "Category_String")
-    """
     c = round(pm25, 1)
-
     if c <= 12.0:
-        aqi = ((50 - 0) / (12.0 - 0.0)) * (c - 0.0) + 0
-        category = "Good"
+        aqi, cat = ((50 / 12.0) * c), "Good"
     elif c <= 35.4:
-        aqi = ((100 - 51) / (35.4 - 12.1)) * (c - 12.1) + 51
-        category = "Moderate"
+        aqi, cat = ((49 / 23.3) * (c - 12.1) + 51), "Moderate"
     elif c <= 55.4:
-        aqi = ((150 - 101) / (55.4 - 35.5)) * (c - 35.5) + 101
-        category = "Unhealthy for Sensitive Groups"
+        aqi, cat = ((49 / 19.9) * (c - 35.5) + 101), "Unhealthy for Sensitive Groups"
     elif c <= 150.4:
-        aqi = ((200 - 151) / (150.4 - 55.5)) * (c - 55.5) + 151
-        category = "Unhealthy"
-    elif c <= 250.4:
-        aqi = ((300 - 201) / (250.4 - 150.5)) * (c - 150.5) + 201
-        category = "Very Unhealthy"
+        aqi, cat = ((49 / 94.9) * (c - 55.5) + 151), "Unhealthy"
     else:
-        c = min(c, 500.4)
-        aqi = ((500 - 301) / (500.4 - 250.5)) * (c - 250.5) + 301
-        category = "Hazardous"
+        aqi, cat = 201, "Very Unhealthy"
+    return int(round(aqi)), cat
 
-    return int(round(aqi)), category
+
+def connect_sensor():
+    """Helper to initialize or re-initialize the sensor object."""
+    try:
+        return SPS30(1)
+    except:
+        return None
 
 
 def main():
-    print("Connecting to SPS30 on I2C bus 1...")
+    print("SPS30 Monitor Starting...")
+    sps = connect_sensor()
 
-    try:
-        sps = SPS30(1)
-    except Exception as e:
-        print(f"Failed to connect to I2C bus: {e}")
-        return
+    TOTAL_CYCLE_TIME = 60
+    WARMUP_TIME = 30
+    READ_SAMPLES = 10
+    SLEEP_TIME = TOTAL_CYCLE_TIME - WARMUP_TIME - READ_SAMPLES
 
-    # For a 1-minute cycle: 10s warmup + 10s read + 40s sleep = 60s
-    SLEEP_SECONDS = 40
-
-    # It's good practice to stop the measurement at startup just in case
-    # a previous run crashed and left the fan running.
-    try:
-        sps.stop_measurement()
-        time.sleep(0.5)
-    except:
-        pass
-
-    try:
-        while True:
-            print("\n" + "=" * 45)
-            print("Starting new measurement cycle...")
-
-            # 1. START MEASUREMENT (Fan turns on)
-            print("Fan ON: Warming up for 10 seconds to stabilize airflow...")
-            try:
-                sps.start_measurement()
-            except Exception as e:
-                print(f"Failed to start measurement: {e}. Retrying in 5 seconds...")
+    while True:
+        try:
+            if sps is None:
+                print("Sensor not found. Retrying connection...")
+                sps = connect_sensor()
                 time.sleep(5)
                 continue
 
-            time.sleep(10)  # Wait for warm-up
+            print(f"\n--- Cycle Start: {time.strftime('%H:%M:%S')} ---")
 
-            # 2. TAKE 10 READINGS
-            print("Taking 10 readings (1 per second)...")
-            readings = {
-                "pm1p0": [],
-                "pm2p5": [],
-                "pm4p0": [],
-                "pm10p0": [],
-                "nc0p5": [],
-                "nc1p0": [],
-                "nc2p5": [],
-                "typical": [],
-            }
+            # 1. START MEASUREMENT (With 3-attempt Retry)
+            started = False
+            for attempt in range(3):
+                try:
+                    sps.start_measurement()
+                    started = True
+                    break
+                except OSError:
+                    print(f"  [!] Sensor NACK on Start (Attempt {attempt + 1}/3)")
+                    time.sleep(2)
 
-            for i in range(10):
-                sps.read_measured_values()
-                data = sps.dict_values
+            if not started:
+                print("  [!!!] Critical I2C Failure. Resetting sensor object...")
+                sps = connect_sensor()  # Re-init the bus
+                time.sleep(10)
+                continue
 
-                for key in readings.keys():
-                    readings[key].append(data[key])
+            print(f"Fan ON: Warming up ({WARMUP_TIME}s)...")
+            time.sleep(WARMUP_TIME)
 
-                print(f"  Reading {i + 1}/10... (PM2.5: {data['pm2p5']:5.2f})")
+            # 2. COLLECT DATA
+            print(f"Recording {READ_SAMPLES} samples...")
+            readings = {"pm1p0": [], "pm2p5": [], "pm4p0": [], "pm10p0": []}
+
+            for _ in range(READ_SAMPLES):
+                try:
+                    sps.read_measured_values()
+                    d = sps.dict_values
+                    if d:
+                        readings["pm1p0"].append(d["pm1p0"])
+                        readings["pm2p5"].append(d["pm2p5"])
+                        readings["pm4p0"].append(d["pm4p0"])
+                        readings["pm10p0"].append(d["pm10p0"])
+                except OSError:
+                    print("  [!] Data packet dropped...")
                 time.sleep(1)
 
-            # 3. STOP MEASUREMENT (Fan turns off)
-            print("Fan OFF: Stopping measurement.")
-            sps.stop_measurement()
+            # 3. STOP SENSOR
+            try:
+                sps.stop_measurement()
+                print("Fan OFF.")
+            except OSError:
+                print("  [!] Could not send STOP command.")
 
-            # 4. CALCULATE AVERAGES & AQI
-            avg_data = {}
-            for key in readings.keys():
-                avg_data[key] = sum(readings[key]) / len(readings[key])
+            # 4. AVERAGE & DISPLAY ALL VALUES
+            if len(readings["pm2p5"]) > 0:
+                # Helper to calculate avg
+                def avg(lst):
+                    return sum(lst) / len(lst)
 
-            aqi_value, aqi_category = get_aqi_and_category(avg_data["pm2p5"])
+                avg_pm1 = avg(readings["pm1p0"])
+                avg_pm25 = avg(readings["pm2p5"])
+                avg_pm4 = avg(readings["pm4p0"])
+                avg_pm10 = avg(readings["pm10p0"])
 
-            # 5. PRINT AVERAGE OUTPUT
-            print("-" * 45)
-            print(f"AQI : {aqi_value} ({aqi_category})")
-            print("-" * 45)
-            print(f"PM 1.0 : {avg_data['pm1p0']:5.2f} µg/m³")
-            print(f"PM 2.5 : {avg_data['pm2p5']:5.2f} µg/m³")
-            print(f"PM 4.0 : {avg_data['pm4p0']:5.2f} µg/m³")
-            print(f"PM 10.0: {avg_data['pm10p0']:5.2f} µg/m³")
+                aqi_val, aqi_cat = get_aqi_and_category(avg_pm25)
 
-            print(f"NC 0.5 : {avg_data['nc0p5']:5.2f} pt/cm³")
-            print(f"NC 1.0 : {avg_data['nc1p0']:5.2f} pt/cm³")
-            print(f"NC 2.5 : {avg_data['nc2p5']:5.2f} pt/cm³")
+                print("-" * 40)
+                print(f"AQI    : {aqi_val} ({aqi_cat})")
+                print(f"PM 1.0 : {avg_pm1:5.2f} µg/m³")
+                print(f"PM 2.5 : {avg_pm25:5.2f} µg/m³")
+                print(f"PM 4.0 : {avg_pm4:5.2f} µg/m³")
+                print(f"PM 10.0: {avg_pm10:5.2f} µg/m³")
+                print("-" * 40)
+            else:
+                print("  [!] No valid data collected this cycle.")
 
-            print(f"Typical: {avg_data['typical']:5.2f} µm")
-            print("-" * 45)
+            print(f"Cycle complete. Sleeping {SLEEP_TIME}s...")
+            time.sleep(SLEEP_TIME)
 
-            # 6. SLEEP
-            print(
-                f"Cycle complete. Sleeping for {SLEEP_SECONDS}s. Press Ctrl+C to exit."
-            )
-            time.sleep(SLEEP_SECONDS)
-
-    except KeyboardInterrupt:
-        print("\nScript interrupted. Shutting down sensor...")
-        try:
-            sps.stop_measurement()
-        except:
-            pass
-        print("Done.")
-    except Exception as e:
-        print(f"\nAn error occurred: {e}")
-        try:
-            sps.stop_measurement()
-        except:
-            pass
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+            if sps:
+                try:
+                    sps.stop_measurement()
+                except:
+                    pass
+            break
+        except Exception as e:
+            print(f"\nUnexpected error: {e}")
+            time.sleep(10)
 
 
 if __name__ == "__main__":
