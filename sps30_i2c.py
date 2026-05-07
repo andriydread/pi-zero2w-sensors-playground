@@ -5,7 +5,7 @@ from sps30 import SPS30
 
 # --- CONFIGURATION ---
 I2C_BUS = 3  # Must use Bus 3 (Software I2C) as set in config.txt
-TOTAL_CYCLE_TIME = 300  # 5 Minutes (300 seconds)
+TOTAL_CYCLE_TIME = 60  # 5 Minutes (300 seconds)
 WARMUP_TIME = 30  # 30 seconds warmup for accurate readings
 SAMPLE_COUNT = 10  # Take 10 samples then average them
 # Calculate sleep time to maintain exactly a 5-minute cycle
