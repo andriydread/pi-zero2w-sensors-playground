@@ -7,7 +7,7 @@ import serial
 # --- CONFIGURATION ---
 SERIAL_PORT = "/dev/serial0"
 BAUD_RATE = 115200
-TOTAL_CYCLE_TIME = 60  # 5 minutes
+TOTAL_CYCLE_TIME = 300
 WARMUP_TIME = 30
 SAMPLE_COUNT = 10
 
@@ -42,7 +42,7 @@ class SPS30_UART:
         return out
 
     def send_command(self, cmd_id, data=[]):
-        # Frame: [Addr, Cmd, Len, Data..., Chk]
+        self.ser.flushInput()  # Clear buffer before sending
         frame_content = [0x00, cmd_id, len(data)] + data
         chk = self._calc_checksum(frame_content)
         full_frame = bytearray(
@@ -51,38 +51,33 @@ class SPS30_UART:
         self.ser.write(full_frame)
 
     def read_response(self):
-        # Read until start byte
-        raw = self.ser.read_until(b"\x7e")
-        # Read until end byte
-        payload_raw = self.ser.read_until(b"\x7e")
+        raw = self.ser.read_until(b"\x7e")  # Find start
+        payload_raw = self.ser.read_until(b"\x7e")  # Find end
 
         if not payload_raw.endswith(b"\x7e"):
-            return None
+            return "TIMEOUT"
 
         payload = self._unstuff_data(payload_raw[:-1])
-
-        # Structure: [Addr, Cmd, State, Len, Data..., Chk]
         if len(payload) < 5:
-            return None
+            return "SHORT"
+
+        # Security Checks
+        if self._calc_checksum(payload[:-1]) != payload[-1]:
+            return "CHKSUM_ERR"
+
+        if payload[2] != 0x00:
+            return f"STATE_{payload[2]}"  # This returns the 128 error
 
         data_len = payload[3]
-        data = payload[4 : 4 + data_len]
-        received_chk = payload[-1]
+        return payload[4 : 4 + data_len]
 
-        # Security: Validate Checksum
-        if self._calc_checksum(payload[:-1]) != received_chk:
-            print("  [!] Checksum mismatch!")
-            return None
-
-        # Security: Check State byte (0x00 is success)
-        if payload[2] != 0x00:
-            print(f"  [!] Sensor returned error state: {payload[2]}")
-            return None
-
-        return data
+    def device_reset(self):
+        """Hard reset the sensor's internal MCU"""
+        print("  [!] Sending Device Reset Command...")
+        self.send_command(0xD3)
+        time.sleep(2)
 
     def start(self):
-        # 0x01, 0x03 = Big Endian Float output
         self.send_command(0x00, [0x01, 0x03])
 
     def stop(self):
@@ -91,11 +86,9 @@ class SPS30_UART:
     def read_values(self):
         self.send_command(0x03)
         res = self.read_response()
-        if res and len(res) >= 40:
-            # SPS30 returns 10 floats (40 bytes)
-            # PM1.0, 2.5, 4.0, 10.0, NC0.5, 1.0, 2.5, 4.0, 10.0, Typical
+        if isinstance(res, bytearray) and len(res) >= 40:
             return struct.unpack(">ffffffffff", res)
-        return None
+        return res  # Returns the error string
 
 
 def get_aqi_category(pm25):
@@ -114,32 +107,46 @@ def get_aqi_category(pm25):
 
 def main():
     print(f"SPS30 UART Monitor Starting on {SERIAL_PORT}...")
-    try:
-        sps = SPS30_UART(SERIAL_PORT)
-    except Exception as e:
-        print(f"Failed to open serial port: {e}")
-        return
+    sps = SPS30_UART(SERIAL_PORT)
 
-    sleep_time = TOTAL_CYCLE_TIME - WARMUP_TIME - SAMPLE_COUNT
-
-    try:
-        while True:
+    while True:
+        try:
             print(f"\n--- Cycle Start: {time.strftime('%H:%M:%S')} ---")
 
-            sps.start()
-            print(f"Fan ON: Stabilizing for {WARMUP_TIME}s...")
+            # --- STARTUP WITH RETRY ---
+            success = False
+            for _ in range(3):
+                sps.start()
+                time.sleep(2)
+                # Check if it actually started by trying to read
+                test_read = sps.read_values()
+                if not isinstance(
+                    test_read, str
+                ):  # If it's not an error string, it worked
+                    success = True
+                    break
+                else:
+                    print(f"  [!] Startup error: {test_read}. Resetting...")
+                    sps.device_reset()
+
+            if not success:
+                print("  [!!!] Failed to start sensor after resets. Check 5V power.")
+                time.sleep(60)
+                continue
+
+            print(f"Fan ON: Stabilizing ({WARMUP_TIME}s)...")
             time.sleep(WARMUP_TIME)
 
             readings = {"p1": [], "p25": [], "p10": []}
-
-            print(f"Collecting {SAMPLE_COUNT} samples...")
             for i in range(SAMPLE_COUNT):
                 data = sps.read_values()
-                if data:
+                if isinstance(data, tuple):
                     readings["p1"].append(data[0])
                     readings["p25"].append(data[1])
                     readings["p10"].append(data[3])
                     print(f"  [{i + 1}/{SAMPLE_COUNT}] PM2.5: {data[1]:.2f}")
+                else:
+                    print(f"  [!] Read error: {data}")
                 time.sleep(1)
 
             sps.stop()
@@ -150,34 +157,27 @@ def main():
                 def avg(l):
                     return sum(l) / len(l)
 
-                avg_p1 = avg(readings["p1"])
-                avg_p25 = avg(readings["p25"])
-                avg_p10 = avg(readings["p10"])
-
-                aqi_v, aqi_c = get_aqi_category(avg_p25)
-
-                # Math: Isolate the sizes
-                fine_isolated = max(0, avg_p25 - avg_p1)  # Mass between 1.0 and 2.5
-                coarse_isolated = max(0, avg_p10 - avg_p25)  # Mass between 2.5 and 10.0
-
+                a1, a25, a10 = (
+                    avg(readings["p1"]),
+                    avg(readings["p25"]),
+                    avg(readings["p10"]),
+                )
+                aqi_v, aqi_c = get_aqi_category(a25)
                 print("-" * 40)
-                print(f"US EPA AQI: {aqi_v} ({aqi_c})")
+                print(
+                    f"AQI: {aqi_v} ({aqi_c}) | Isolated: 1.0-2.5: {max(0, a25 - a1):.2f} | 2.5-10: {max(0, a10 - a25):.2f}"
+                )
                 print("-" * 40)
-                print("Isolated Concentrations:")
-                print(f"  0.0 - 1.0µm : {avg_p1:6.2f} µg/m³")
-                print(f"  1.0 - 2.5µm : {fine_isolated:6.2f} µg/m³")
-                print(f"  2.5 - 10 µm : {coarse_isolated:6.2f} µg/m³")
-                print("-" * 40)
-            else:
-                print("No data collected this cycle.")
 
-            print(f"Sleeping {sleep_time}s...")
-            time.sleep(max(0, sleep_time))
+            print(f"Sleeping {TOTAL_CYCLE_TIME - WARMUP_TIME - SAMPLE_COUNT}s...")
+            time.sleep(TOTAL_CYCLE_TIME - WARMUP_TIME - SAMPLE_COUNT)
 
-    except KeyboardInterrupt:
-        print("\nStopping sensor...")
-        sps.stop()
-        sys.exit()
+        except KeyboardInterrupt:
+            sps.stop()
+            sys.exit()
+        except Exception as e:
+            print(f"Unexpected: {e}")
+            time.sleep(10)
 
 
 if __name__ == "__main__":
