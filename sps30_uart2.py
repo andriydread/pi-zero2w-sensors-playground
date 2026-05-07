@@ -7,7 +7,7 @@ import serial
 # --- CONFIGURATION ---
 SERIAL_PORT = "/dev/serial0"
 BAUD_RATE = 115200
-TOTAL_CYCLE_TIME = 300
+TOTAL_CYCLE_TIME = 60
 WARMUP_TIME = 30
 SAMPLE_COUNT = 10
 
@@ -42,7 +42,7 @@ class SPS30_UART:
         return out
 
     def send_command(self, cmd_id, data=[]):
-        self.ser.flushInput()  # Clear buffer before sending
+        self.ser.flushInput()
         frame_content = [0x00, cmd_id, len(data)] + data
         chk = self._calc_checksum(frame_content)
         full_frame = bytearray(
@@ -51,44 +51,46 @@ class SPS30_UART:
         self.ser.write(full_frame)
 
     def read_response(self):
-        raw = self.ser.read_until(b"\x7e")  # Find start
-        payload_raw = self.ser.read_until(b"\x7e")  # Find end
+        raw = self.ser.read_until(b"\x7e")
+        payload_raw = self.ser.read_until(b"\x7e")
 
         if not payload_raw.endswith(b"\x7e"):
             return "TIMEOUT"
 
         payload = self._unstuff_data(payload_raw[:-1])
         if len(payload) < 5:
-            return "SHORT"
+            return "SHORT_FRAME"
 
-        # Security Checks
         if self._calc_checksum(payload[:-1]) != payload[-1]:
             return "CHKSUM_ERR"
 
+        # Byte 2 is the Status/Error byte. 0x00 is OK, 0x80 is 128 (Idle)
         if payload[2] != 0x00:
-            return f"STATE_{payload[2]}"  # This returns the 128 error
+            return f"ERR_{payload[2]}"
 
         data_len = payload[3]
         return payload[4 : 4 + data_len]
 
     def device_reset(self):
-        """Hard reset the sensor's internal MCU"""
-        print("  [!] Sending Device Reset Command...")
+        print("  [!] Resetting sensor hardware...")
         self.send_command(0xD3)
-        time.sleep(2)
+        time.sleep(3)  # Sensor needs 2-3 seconds to reboot
 
-    def start(self):
+    def start_measurement(self):
+        # 0x01 0x03 = IEEE754 Float format
         self.send_command(0x00, [0x01, 0x03])
+        time.sleep(1)
 
-    def stop(self):
+    def stop_measurement(self):
         self.send_command(0x01)
+        time.sleep(1)
 
     def read_values(self):
         self.send_command(0x03)
         res = self.read_response()
         if isinstance(res, bytearray) and len(res) >= 40:
             return struct.unpack(">ffffffffff", res)
-        return res  # Returns the error string
+        return res  # Return the error string (e.g., ERR_128)
 
 
 def get_aqi_category(pm25):
@@ -113,31 +115,37 @@ def main():
         try:
             print(f"\n--- Cycle Start: {time.strftime('%H:%M:%S')} ---")
 
-            # --- STARTUP WITH RETRY ---
+            # --- AGGRESSIVE STARTUP SEQUENCE ---
             success = False
-            for _ in range(3):
-                sps.start()
-                time.sleep(2)
-                # Check if it actually started by trying to read
-                test_read = sps.read_values()
-                if not isinstance(
-                    test_read, str
-                ):  # If it's not an error string, it worked
+            for attempt in range(1, 5):
+                print(f"  Attempting to start fan (Try {attempt}/4)...")
+                sps.stop_measurement()  # Ensure it's not in a hung state
+                sps.start_measurement()
+
+                # Check if it actually started
+                check = sps.read_values()
+                if isinstance(check, tuple):
+                    print("  [+] Fan started successfully.")
                     success = True
                     break
                 else:
-                    print(f"  [!] Startup error: {test_read}. Resetting...")
+                    print(f"  [!] Sensor refused start ({check}). Resetting...")
                     sps.device_reset()
 
             if not success:
-                print("  [!!!] Failed to start sensor after resets. Check 5V power.")
-                time.sleep(60)
+                print("  [!!!] Critical: Sensor failed to start. Sleeping 5 mins.")
+                time.sleep(300)
                 continue
 
+            # --- WARMUP ---
             print(f"Fan ON: Stabilizing ({WARMUP_TIME}s)...")
             time.sleep(WARMUP_TIME)
 
+            # --- DATA COLLECTION ---
             readings = {"p1": [], "p25": [], "p10": []}
+            collected = 0
+
+            print(f"Collecting {SAMPLE_COUNT} samples...")
             for i in range(SAMPLE_COUNT):
                 data = sps.read_values()
                 if isinstance(data, tuple):
@@ -145,14 +153,16 @@ def main():
                     readings["p25"].append(data[1])
                     readings["p10"].append(data[3])
                     print(f"  [{i + 1}/{SAMPLE_COUNT}] PM2.5: {data[1]:.2f}")
+                    collected += 1
                 else:
-                    print(f"  [!] Read error: {data}")
+                    print(f"  [!] Read error during cycle: {data}")
                 time.sleep(1)
 
-            sps.stop()
+            sps.stop_measurement()
             print("Fan OFF.")
 
-            if len(readings["p25"]) > 0:
+            # --- REPORTING ---
+            if collected > 0:
 
                 def avg(l):
                     return sum(l) / len(l)
@@ -163,20 +173,31 @@ def main():
                     avg(readings["p10"]),
                 )
                 aqi_v, aqi_c = get_aqi_category(a25)
-                print("-" * 40)
-                print(
-                    f"AQI: {aqi_v} ({aqi_c}) | Isolated: 1.0-2.5: {max(0, a25 - a1):.2f} | 2.5-10: {max(0, a10 - a25):.2f}"
-                )
-                print("-" * 40)
 
-            print(f"Sleeping {TOTAL_CYCLE_TIME - WARMUP_TIME - SAMPLE_COUNT}s...")
+                # Math: Calculate Isolated Fractions
+                fine = max(0, a25 - a1)
+                coarse = max(0, a10 - a25)
+
+                print("-" * 45)
+                print(f"US EPA AQI: {aqi_v} ({aqi_c})")
+                print("-" * 45)
+                print("Isolated Masses:")
+                print(f"  0.0 - 1.0µm : {a1:6.2f} µg/m³")
+                print(f"  1.0 - 2.5µm : {fine:6.2f} µg/m³")
+                print(f"  2.5 - 10 µm : {coarse:6.2f} µg/m³")
+                print("-" * 45)
+
+            print(
+                f"Cycle finished. Sleeping {TOTAL_CYCLE_TIME - WARMUP_TIME - SAMPLE_COUNT}s..."
+            )
             time.sleep(TOTAL_CYCLE_TIME - WARMUP_TIME - SAMPLE_COUNT)
 
         except KeyboardInterrupt:
-            sps.stop()
+            print("\nShutting down...")
+            sps.stop_measurement()
             sys.exit()
         except Exception as e:
-            print(f"Unexpected: {e}")
+            print(f"Unexpected Error: {e}")
             time.sleep(10)
 
 
