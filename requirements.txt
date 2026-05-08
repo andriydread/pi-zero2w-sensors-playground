@@ -18,3 +18,4 @@ pigpio
 rpi-lgpio
 adafruit-circuitpython-epd 
 adafruit-blinka
+adafruit-circuitpython-htu21d
