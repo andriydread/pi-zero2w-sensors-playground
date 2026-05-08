@@ -2,12 +2,12 @@ import time
 
 from PIL import Image, ImageDraw, ImageFont
 
-from uc8253c import UC8253C
+from uc8253c import UC8253C_SPI
 
 
 def main():
     # Initialize display in Landscape mode
-    with UC8253C(rotation=90) as display:
+    with UC8253C_SPI(rotation=90) as display:
         print("1. Waking up and clearing screen...")
         display.clear()
 

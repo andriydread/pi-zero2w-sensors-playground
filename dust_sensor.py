@@ -9,10 +9,10 @@ BAUD_RATE = 115200
 TOTAL_CYCLE_TIME = 60
 WARMUP_TIME = 30
 SAMPLE_COUNT = 10
+CLEANING_INTERVAL_SEC = 7 * 24 * 60 * 60  # 1 Week in seconds
 
 
 def get_aqi_category(pm25):
-    """Calculates US EPA AQI based on PM2.5 concentration."""
     c = round(pm25, 1)
     if c <= 12.0:
         return int(round((50 / 12.0) * c)), "Good"
@@ -26,22 +26,49 @@ def get_aqi_category(pm25):
         return 201, "Very Unhealthy"
 
 
+def run_cleaning_cycle(sps):
+    """Helper function to safely run the 10-second cleaning cycle."""
+    print("  [#] Initiating Fan Self-Cleaning Cycle...")
+    sps.start_measurement()  # Fan MUST be running to accept cleaning command
+    time.sleep(1)
+    sps.start_fan_cleaning()  # Takes 10 seconds
+    sps.stop_measurement()
+    print("  [#] Self-Cleaning Complete.")
+
+
 def main():
     print(f"SPS30 UART Monitor Starting on {SERIAL_PORT}...")
     sps = SPS30_UART(SERIAL_PORT, baud_rate=BAUD_RATE)
+
+    # --- Fetch Device Info (Optional but great for debugging) ---
+    sps.start_measurement()  # Wake up briefly
+    ok, sn = sps.read_device_info(0x03)
+    ok, fw = sps.read_firmware_version()
+    print(
+        f"Device Connected! SN: {sn if ok else 'Unknown'}, Firmware: v{fw if ok else 'Unknown'}"
+    )
+
+    # --- STARTUP CLEANING ---
+    run_cleaning_cycle(sps)
+    last_cleaning_time = time.time()  # Start the 1-week timer
 
     while True:
         try:
             print(f"\n--- Cycle Start: {time.strftime('%H:%M:%S')} ---")
 
+            # --- CHECK IF WEEKLY CLEANING IS DUE ---
+            if time.time() - last_cleaning_time >= CLEANING_INTERVAL_SEC:
+                print("--- 1 Week Reached: Triggering Scheduled Cleaning ---")
+                run_cleaning_cycle(sps)
+                last_cleaning_time = time.time()  # Reset timer
+
             # --- AGGRESSIVE STARTUP SEQUENCE ---
             success = False
             for attempt in range(1, 5):
                 print(f"  Attempting to start fan (Try {attempt}/4)...")
-                sps.stop_measurement()  # Clear hung states safely
+                sps.stop_measurement()
                 sps.start_measurement()
 
-                # Verify if it actually started
                 read_success, data = sps.read_values()
                 if read_success:
                     print("  [+] Fan started successfully.")
@@ -52,9 +79,7 @@ def main():
                     sps.device_reset()
 
             if not success:
-                print(
-                    "  [!!!] Critical: Sensor failed to start entirely. Sleeping 5 mins."
-                )
+                print("  [!!!] Critical: Sensor failed to start. Sleeping 5 mins.")
                 time.sleep(300)
                 continue
 
@@ -69,7 +94,6 @@ def main():
             print(f"Collecting {SAMPLE_COUNT} samples...")
             for i in range(SAMPLE_COUNT):
                 read_success, data = sps.read_values()
-
                 if read_success:
                     readings["p1"].append(data[0])
                     readings["p25"].append(data[1])
@@ -85,19 +109,14 @@ def main():
 
             # --- REPORTING ---
             if collected > 0:
-
-                def avg(lst):
-                    return sum(lst) / len(lst)
-
+                avg = lambda lst: sum(lst) / len(lst)
                 a1, a25, a10 = (
                     avg(readings["p1"]),
                     avg(readings["p25"]),
                     avg(readings["p10"]),
                 )
-
                 aqi_v, aqi_c = get_aqi_category(a25)
 
-                # Isolated Mass Fractions
                 fine = max(0, a25 - a1)
                 coarse = max(0, a10 - a25)
 
@@ -110,8 +129,7 @@ def main():
                 print(f"  2.5 - 10 µm : {coarse:6.2f} µg/m³")
                 print("-" * 45)
 
-            # Sleep math verification to prevent negative delays if collecting was slow
-            time_spent = WARMUP_TIME + (SAMPLE_COUNT * 1)  # ~1s per sample loop
+            time_spent = WARMUP_TIME + (SAMPLE_COUNT * 1)
             sleep_time = max(0, TOTAL_CYCLE_TIME - time_spent)
 
             print(f"Cycle finished. Sleeping {sleep_time}s...")
@@ -123,7 +141,7 @@ def main():
             sys.exit(0)
         except Exception as e:
             print(f"Unexpected Loop Error: {e}")
-            time.sleep(10)  # Pause so error logs don't spam endlessly
+            time.sleep(10)
 
 
 if __name__ == "__main__":

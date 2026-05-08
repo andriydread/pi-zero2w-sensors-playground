@@ -1,5 +1,5 @@
 # pyserial
-# adafruit-circuitpython-scd4x
+adafruit-circuitpython-scd4x
 # adafruit-blinka
 # spidev
 # Pillow

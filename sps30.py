@@ -13,13 +13,11 @@ class SPS30_UART:
         self._connect()
 
     def _connect(self):
-        """Safely establishes or re-establishes the serial connection."""
         if self.ser and self.ser.is_open:
             try:
                 self.ser.close()
             except:
                 pass
-
         try:
             self.ser = serial.Serial(
                 self.port, baudrate=self.baud_rate, timeout=self.timeout
@@ -55,13 +53,11 @@ class SPS30_UART:
         return out
 
     def send_command(self, cmd_id, data=[]):
-        """Sends a command to the sensor safely."""
         if not self.ser or not self.ser.is_open:
             if not self._connect():
                 return False, "PORT_CLOSED"
 
         try:
-            # Clear old buffers to prevent reading out-of-sync data
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
 
@@ -74,23 +70,19 @@ class SPS30_UART:
             self.ser.write(full_frame)
             return True, "OK"
         except serial.SerialException:
-            self._connect()  # Attempt immediate recovery for next time
+            self._connect()
             return False, "WRITE_ERR"
 
     def read_response(self):
-        """Reads and rigorously validates the response from the sensor."""
         if not self.ser or not self.ser.is_open:
             return False, "PORT_CLOSED"
 
         try:
-            # First read should hit the opening 0x7E
             start_flag = self.ser.read_until(b"\x7e")
             if not start_flag:
                 return False, "TIMEOUT_NO_RESPONSE"
 
-            # Second read gets the payload and the closing 0x7E
             payload_raw = self.ser.read_until(b"\x7e")
-
             if not payload_raw.endswith(b"\x7e"):
                 return False, "TIMEOUT_INCOMPLETE_FRAME"
 
@@ -114,38 +106,66 @@ class SPS30_UART:
         except Exception as e:
             return False, f"UNEXPECTED_ERR: {e}"
 
+    # --- NEW: Device Info Functions ---
+    def read_device_info(self, info_type=0x03):
+        """0x01 = Product Name, 0x03 = Serial Number"""
+        sent, _ = self.send_command(0xD0, [info_type])
+        if not sent:
+            return False, "CMD_SEND_FAILED"
+
+        success, res = self.read_response()
+        if success:
+            try:
+                # Remove trailing null bytes and decode ASCII
+                return True, res.decode("ascii").rstrip("\x00")
+            except:
+                return False, "DECODE_ERR"
+        return False, res
+
+    def read_firmware_version(self):
+        sent, _ = self.send_command(0xD1)
+        if not sent:
+            return False, "CMD_SEND_FAILED"
+
+        success, res = self.read_response()
+        if success and len(res) >= 2:
+            return True, f"{res[0]}.{res[1]}"
+        return False, res
+
+    # --- Sensor Controls ---
     def device_reset(self):
-        """Hardware reset command."""
         self.send_command(0xD3)
-        time.sleep(3)  # Wait for reboot
+        time.sleep(3)
 
     def start_measurement(self):
-        """Starts the fan and measurement loop."""
-        # 0x01 0x03 = IEEE754 Float format
         success, err = self.send_command(0x00, [0x01, 0x03])
         time.sleep(1)
         return success
 
     def stop_measurement(self):
-        """Stops the fan."""
         success, err = self.send_command(0x01)
         time.sleep(1)
         return success
 
+    # --- NEW: Fan Cleaning ---
+    def start_fan_cleaning(self):
+        """Triggers the fan cleaning cycle. Sensor MUST be in measurement mode first."""
+        success, err = self.send_command(0x56)
+        if success:
+            time.sleep(10)  # Cleaning takes 10 seconds, sensor ignores other commands
+        return success
+
     def read_values(self):
-        """Requests and unpacks the float values securely."""
         sent, _ = self.send_command(0x03)
         if not sent:
             return False, "CMD_SEND_FAILED"
 
         success, res = self.read_response()
-
         if success and isinstance(res, bytearray) and len(res) >= 40:
             try:
-                # Unpack 10 Floats (Big Endian)
                 data = struct.unpack(">ffffffffff", res)
                 return True, data
             except struct.error:
                 return False, "DECODE_ERR"
 
-        return False, res  # Passes up the error string (e.g. TIMEOUT)
+        return False, res

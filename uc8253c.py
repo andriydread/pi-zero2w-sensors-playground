@@ -9,7 +9,7 @@ import RPi.GPIO as GPIO
 import spidev
 
 
-class UC8253C:
+class UC8253C_SPI:
     # --- Hardware Commands ---
     _CMD_PANEL_SETTING = 0x00
     _CMD_POWER_OFF = 0x02
