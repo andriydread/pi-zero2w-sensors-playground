@@ -106,7 +106,6 @@ class SPS30_UART:
         except Exception as e:
             return False, f"UNEXPECTED_ERR: {e}"
 
-    # --- NEW: Device Info Functions ---
     def read_device_info(self, info_type=0x03):
         """0x01 = Product Name, 0x03 = Serial Number"""
         sent, _ = self.send_command(0xD0, [info_type])
@@ -147,7 +146,6 @@ class SPS30_UART:
         time.sleep(1)
         return success
 
-    # --- NEW: Fan Cleaning ---
     def start_fan_cleaning(self):
         """Triggers the fan cleaning cycle. Sensor MUST be in measurement mode first."""
         success, err = self.send_command(0x56)

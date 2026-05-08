@@ -9,7 +9,7 @@ from adafruit_htu21d import HTU21D
 from sps30 import SPS30_UART  # Your custom library
 
 # --- CONFIGURATION ---
-CYCLE_TIME = 300  # 5 minutes in seconds
+CYCLE_TIME = 60  # 5 minutes in seconds
 SPS_WARMUP = 30
 SPS_SAMPLES = 5
 CLEANING_INTERVAL_SEC = 7 * 24 * 60 * 60  # 1 Week in seconds
