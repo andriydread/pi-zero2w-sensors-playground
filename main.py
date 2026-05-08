@@ -77,7 +77,9 @@ def run_cleaning_cycle(sps):
 
 
 # --- DISPLAY ---
-def update_display(pm1, pm25, pm4, pm10, aqi_val, aqi_cat, co2, temp, hum):
+def update_display(
+    pm1, pm25, pm4, pm10, aqi_val, aqi_cat, co2, temp, co2_t, hum, co2_h
+):
     print("\n" + "=" * 45)
     print("       SENDING DATA TO E-PAPER SCREEN     ")
     print("=" * 45)
@@ -89,7 +91,9 @@ def update_display(pm1, pm25, pm4, pm10, aqi_val, aqi_cat, co2, temp, hum):
     print("-" * 45)
     print(f"  CO2      : {co2} ppm")
     print(f"  Temp     : {temp} °C")
+    print(f"  Temp_co2 : {co2_t} °C")
     print(f"  Hum      : {hum} %")
+    print(f"  Hum_co2  : {co2_h} %")
     print("=" * 45 + "\n")
 
 
@@ -172,16 +176,27 @@ def main():
                     last_co2 = None
                     while scd.data_ready:
                         last_co2 = scd.CO2
-                        _ = scd.temperature
                     if last_co2 is not None:
                         d_co2 = str(last_co2)
+                        d_co2_t = f"{scd.temperature:.2f}"
+                        d_co2_h = f"{scd.relative_humidity:.2f}"
                 except Exception as e:
                     print(f"  [!] SCD41 Read Error: {e}")
                     scd = None  # Mark as dead so it auto-recovers next cycle
 
             # --- UPDATE DISPLAY ---
             update_display(
-                d_pm1, d_pm25, d_pm4, d_pm10, d_aqi_val, d_aqi_cat, d_co2, d_temp, d_hum
+                d_pm1,
+                d_pm25,
+                d_pm4,
+                d_pm10,
+                d_aqi_val,
+                d_aqi_cat,
+                d_co2,
+                d_temp,
+                d_co2_t,
+                d_hum,
+                d_co2_h,
             )
 
             # --- SLEEP MATH ---
