@@ -47,7 +47,9 @@ def calculate_us_aqi_pm25(pm25_value):
 # --- I2C SENSOR INITIALIZATION ---
 def get_i2c_bus():
     try:
-        return board.I2C()
+        i2c = board.I2C()
+        print("  [I2C] Bus init successful.")
+        return i2c
     except Exception as e:
         print(f"  [!] BUS ERROR: Could not initialize I2C: {e}")
         return None
@@ -74,8 +76,9 @@ def connect_htu21d(i2c_handle):
         print("  [HTU21D] No I2C provided.")
         return None
     try:
-        print("  [HTU21D] Start sensor init.")
-        return HTU21D(i2c_handle)
+        sensor = HTU21D(i2c_handle)
+        print("  [HTU21D] Sensor init successful.")
+        return sensor
     except Exception:
         print("  [HTU21D] Sensor init error.")
         return None
