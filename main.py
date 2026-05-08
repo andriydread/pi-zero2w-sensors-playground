@@ -6,214 +6,242 @@ import adafruit_scd4x
 import board
 from adafruit_htu21d import HTU21D
 
-from sps30 import SPS30_UART  # Your custom library
+from sps30 import SPS30_UART
 
 # --- CONFIGURATION ---
-CYCLE_TIME = 60  # Set back to 300 for 5-minute intervals
-SPS_WARMUP = 30
-SPS_SAMPLES = 5
-CLEANING_INTERVAL_SEC = 7 * 24 * 60 * 60  # 1 Week in seconds
+CYCLE_TIME_SECONDS = 60  # How often the whole system runs
+SPS_WARMUP_SECONDS = 30
+SPS_SAMPLE_COUNT = 10
+HTU_SAMPLE_COUNT = 5
+WEEKLY_CLEANING_SECONDS = 7 * 24 * 60 * 60
 
 
-# --- AQI MATH ---
-def calculate_us_aqi_pm25(pm25):
-    if pm25 is None or pm25 == "ERR":
-        return "ERR", "ERR"
-    c = round(pm25, 1)
-    if c <= 12.0:
-        return int(round((50 / 12.0) * c)), "Good"
-    elif c <= 35.4:
-        return int(round((49 / 23.3) * (c - 12.1) + 51)), "Moderate"
-    elif c <= 55.4:
-        return int(round((49 / 19.9) * (c - 35.5) + 101)), "Unhealthy (SG)"
-    elif c <= 150.4:
-        return int(round((49 / 94.9) * (c - 55.5) + 151)), "Unhealthy"
-    elif c <= 250.4:
-        return int(round((99 / 99.9) * (c - 150.5) + 201)), "Very Unhealthy"
-    else:
-        val = int(round((199 / 249.9) * (c - 250.5) + 301))
-        return min(val, 500), "Hazardous"
+# --- AQI CALCULATION ---
+def calculate_us_aqi_pm25(pm25_value):
+    """Calculates US EPA AQI for PM2.5. Returns (AQI_Value, Category_String)."""
+    if pm25_value is None or pm25_value == "N/A":
+        return "N/A", "N/A"
+    try:
+        concentration = round(float(pm25_value), 1)
+        if concentration <= 12.0:
+            return int(round((50 / 12.0) * concentration)), "Good"
+        elif concentration <= 35.4:
+            return int(round((49 / 23.3) * (concentration - 12.1) + 51)), "Moderate"
+        elif concentration <= 55.4:
+            return int(
+                round((49 / 19.9) * (concentration - 35.5) + 101)
+            ), "Unhealthy (SG)"
+        elif concentration <= 150.4:
+            return int(round((49 / 94.9) * (concentration - 55.5) + 151)), "Unhealthy"
+        elif concentration <= 250.4:
+            return int(
+                round((99 / 99.9) * (concentration - 150.5) + 201)
+            ), "Very Unhealthy"
+        else:
+            val = int(round((199 / 249.9) * (concentration - 250.5) + 301))
+            return min(val, 500), "Hazardous"
+    except Exception:
+        return "N/A", "N/A"
 
 
-# --- INDEPENDENT I2C INITIALIZATION ---
+# --- I2C SENSOR INITIALIZATION ---
 def get_i2c_bus():
     try:
         return board.I2C()
     except Exception as e:
-        print(f"  [!] I2C Bus Error: {e}")
+        print(f"  [!] BUS ERROR: Could not initialize I2C: {e}")
         return None
 
 
-def connect_scd(i2c):
-    if not i2c:
-        return None
-    try:
-        scd = adafruit_scd4x.SCD4X(i2c)
-        scd.start_periodic_measurement()
-        return scd
-    except Exception as e:
-        print(f"  [!] SCD41 Connect Error: {e}")
-        return None
-
-
-def connect_htu(i2c):
-    if not i2c:
+# --- SCD41 SENSOR INITIALIZATION ---
+def connect_scd41(i2c_handle):
+    if not i2c_handle:
+        print("  [SCD41] No I2C provided.")
         return None
     try:
-        return HTU21D(i2c)
-    except Exception as e:
-        print(f"  [!] HTU21D Connect Error: {e}")
+        sensor = adafruit_scd4x.SCD4X(i2c_handle)
+        sensor.start_periodic_measurement()
+        print("  [SCD41] Sensor init successful.")
+        return sensor
+    except Exception:
+        print("  [SCD41] Sensor init error.")
         return None
 
 
-# --- SPS30 CLEANING ---
-def run_cleaning_cycle(sps):
-    print("  [#] Initiating SPS30 Fan Self-Cleaning Cycle...")
-    sps.start_measurement()
+# --- HRU21D SENSOR INITIALIZATION ---
+def connect_htu21d(i2c_handle):
+    if not i2c_handle:
+        print("  [HTU21D] No I2C provided.")
+        return None
+    try:
+        print("  [HTU21D] Start sensor init.")
+        return HTU21D(i2c_handle)
+    except Exception:
+        print("  [HTU21D] Sensor init error.")
+        return None
+
+
+# --- MAINTENANCE ---
+def perform_sps30_cleaning(sps_handle):
+    """Manually triggers the fan cleaning. Recommended once per week."""
+    print(
+        f"\n[{time.strftime('%H:%M:%S')}] MAINTENANCE: Starting SPS30 Fan Cleaning..."
+    )
+    sps_handle.start_measurement()
     time.sleep(1)
-    sps.start_fan_cleaning()
-    sps.stop_measurement()
-    print("  [#] Self-Cleaning Complete.")
+    sps_handle.start_fan_cleaning()
+    sps_handle.stop_measurement()
+    print("  [+] Cleaning cycle finished.")
 
 
-# --- DISPLAY ---
-def update_display(
-    pm1, pm25, pm4, pm10, aqi_val, aqi_cat, co2, temp, co2_t, hum, co2_h
-):
-    print("\n" + "=" * 45)
-    print("       SENDING DATA TO E-PAPER SCREEN     ")
-    print("=" * 45)
-    print(f"  AQI      : {aqi_val} ({aqi_cat})")
-    print(f"  PM 1.0   : {pm1} µg/m³")
-    print(f"  PM 2.5   : {pm25} µg/m³")
-    print(f"  PM 4.0   : {pm4} µg/m³")
-    print(f"  PM 10.0  : {pm10} µg/m³")
-    print("-" * 45)
-    print(f"  CO2      : {co2} ppm")
-    print(f"  Temp     : {temp} °C")
-    print(f"  Temp_co2 : {co2_t} °C")
-    print(f"  Hum      : {hum} %")
-    print(f"  Hum_co2  : {co2_h} %")
-    print("=" * 45 + "\n")
-
-
-# --- MAIN LOOP ---
+# --- MAIN APPLICATION ---
 def main():
-    print("Initializing System...")
+    print("=" * 50)
+    print("AIR MONITORING SYSTEM STARTING")
+    print("=" * 50)
 
-    i2c = get_i2c_bus()
-    scd = connect_scd(i2c)
-    htu = connect_htu(i2c)
+    # Initialize Hardware
+    i2c_bus = get_i2c_bus()
+    scd41_sensor = connect_scd41(i2c_bus)
+    htu21d_sensor = connect_htu21d(i2c_bus)
+    sps30_sensor = SPS30_UART("/dev/serial0")
 
-    sps = SPS30_UART("/dev/serial0")
-    run_cleaning_cycle(sps)
-    last_cleaning_time = time.time()
+    # Initial Maintenance
+    perform_sps30_cleaning(sps30_sensor)
+    last_cleaning_timestamp = time.time()
 
-    print("--- System Ready. Entering Loop ---")
+    print(f"\n[{time.strftime('%H:%M:%S')}] System Online. Entering main loop...")
 
     while True:
         cycle_start_time = time.time()
+        i2c_error_detected = False
 
-        # Display defaults
-        d_pm1, d_pm25, d_pm4, d_pm10 = "ERR", "ERR", "ERR", "ERR"
-        d_aqi_val, d_aqi_cat = "ERR", "ERR"
-        d_co2, d_temp, d_hum = "ERR", "ERR", "ERR"
+        # Data string defaults for display/output
+        pm1_str, pm25_str, pm4_str, pm10_str = "N/A", "N/A", "N/A", "N/A"
+        aqi_value_str, aqi_category_str = "N/A", "N/A"
+        co2_ppm_str, htu_temp_str, htu_hum_str = "N/A", "N/A", "N/A"
+        scd_temp_str, scd_hum_str = "N/A", "N/A"
+
+        # Check for sensor reconnection
+        if i2c_bus is None:
+            i2c_bus = get_i2c_bus()
+        if scd41_sensor is None and i2c_bus:
+            scd41_sensor = connect_scd41(i2c_bus)
+        if htu21d_sensor is None and i2c_bus:
+            htu21d_sensor = connect_htu21d(i2c_bus)
 
         try:
-            print(f"\n[{time.strftime('%H:%M:%S')}] Cycle Started.")
+            # 1. MAINTENANCE CHECK (Weekly)
+            if time.time() - last_cleaning_timestamp >= WEEKLY_CLEANING_SECONDS:
+                perform_sps30_cleaning(sps30_sensor)
+                last_cleaning_timestamp = time.time()
 
-            # --- AUTO-RECOVERY: Try to revive disconnected sensors ---
-            if i2c is None:
-                print("  [*] Attempting to restart I2C bus...")
-                i2c = get_i2c_bus()
-            if scd is None and i2c:
-                print("  [*] Attempting to reconnect SCD41...")
-                scd = connect_scd(i2c)
-            if htu is None and i2c:
-                print("  [*] Attempting to reconnect HTU21D...")
-                htu = connect_htu(i2c)
+            # 2. READ SPS30 (UART)
+            print(f"\n[{time.strftime('%H:%M:%S')}] CYCLE START")
+            print(f"  [SPS30] Warming up fan ({SPS_WARMUP_SECONDS}s)...")
+            sps30_sensor.start_measurement()
+            time.sleep(SPS_WARMUP_SECONDS)
 
-            # --- CHECK WEEKLY CLEANING ---
-            if time.time() - last_cleaning_time >= CLEANING_INTERVAL_SEC:
-                run_cleaning_cycle(sps)
-                last_cleaning_time = time.time()
-
-            # --- WARM UP & READ SPS30 ---
-            print(f"Waking SPS30 ({SPS_WARMUP}s warmup)...")
-            sps.start_measurement()
-            time.sleep(SPS_WARMUP)
-
-            pm_data = {"1": [], "25": [], "4": [], "10": []}
-            for _ in range(SPS_SAMPLES):
-                success, data = sps.read_values()
+            sps_readings = {"pm1": [], "pm25": [], "pm4": [], "pm10": []}
+            print(f"  [SPS30] Collecting {SPS_SAMPLE_COUNT} samples...")
+            for i in range(SPS_SAMPLE_COUNT):
+                success, data = sps30_sensor.read_values()
                 if success:
-                    pm_data["1"].append(data[0])
-                    pm_data["25"].append(data[1])
-                    pm_data["4"].append(data[2])
-                    pm_data["10"].append(data[3])
+                    sps_readings["pm1"].append(data[0])
+                    sps_readings["pm25"].append(data[1])
+                    sps_readings["pm4"].append(data[2])
+                    sps_readings["pm10"].append(data[3])
                 time.sleep(1)
-            sps.stop_measurement()
+            sps30_sensor.stop_measurement()
 
-            if pm_data["25"]:
-                d_pm1 = f"{(sum(pm_data['1']) / len(pm_data['1'])):.1f}"
-                d_pm25 = f"{(sum(pm_data['25']) / len(pm_data['25'])):.1f}"
-                d_pm4 = f"{(sum(pm_data['4']) / len(pm_data['4'])):.1f}"
-                d_pm10 = f"{(sum(pm_data['10']) / len(pm_data['10'])):.1f}"
-                d_aqi_val, d_aqi_cat = calculate_us_aqi_pm25(float(d_pm25))
+            if sps_readings["pm25"]:
+                avg_pm1 = sum(sps_readings["pm1"]) / len(sps_readings["pm1"])
+                avg_pm25 = sum(sps_readings["pm25"]) / len(sps_readings["pm25"])
+                avg_pm4 = sum(sps_readings["pm4"]) / len(sps_readings["pm4"])
+                avg_pm10 = sum(sps_readings["pm10"]) / len(sps_readings["pm10"])
 
-            # --- READ HTU21D SAFELY ---
-            if htu:
+                pm1_str, pm25_str = f"{avg_pm1:.1f}", f"{avg_pm25:.1f}"
+                pm4_str, pm10_str = f"{avg_pm4:.1f}", f"{avg_pm10:.1f}"
+                aqi_value_str, aqi_category_str = calculate_us_aqi_pm25(avg_pm25)
+                print("  [SPS30] Read successful.")
+            else:
+                print("  [SPS30] Failed to collect any samples.")
+
+            # 3. READ HTU21D (I2C)
+            if htu21d_sensor:
+                print(f"  [HTU21] Collecting {HTU_SAMPLE_COUNT} samples...")
+                temp_readings, hum_readings = [], []
                 try:
-                    d_temp = f"{htu.temperature:.1f}"
-                    d_hum = f"{htu.relative_humidity:.1f}"
-                except Exception as e:
-                    print(f"  [!] HTU21D Read Error: {e}")
-                    htu = None  # Mark as dead so it auto-recovers next cycle
+                    for _ in range(HTU_SAMPLE_COUNT):
+                        temp_readings.append(htu21d_sensor.temperature)
+                        time.sleep(1)
+                        hum_readings.append(htu21d_sensor.relative_humidity)
+                        time.sleep(1)
 
-            # --- READ SCD41 SAFELY ---
-            if scd:
+                    if temp_readings:
+                        htu_temp_str = (
+                            f"{(sum(temp_readings) / len(temp_readings)):.1f}"
+                        )
+                        htu_hum_str = f"{(sum(hum_readings) / len(hum_readings)):.1f}"
+                        print("  [HTU21] Read successful.")
+                except Exception as e:
+                    print(f"  [HTU21] Error reading: {e}")
+                    htu21d_sensor = None
+                    i2c_error_detected = True
+
+            # 4. READ SCD41 (I2C)
+            if scd41_sensor and not i2c_error_detected:
                 try:
-                    last_co2 = None
-                    while scd.data_ready:
-                        last_co2 = scd.CO2
-                    if last_co2 is not None:
-                        d_co2 = str(last_co2)
-                        d_co2_t = f"{scd.temperature:.2f}"
-                        d_co2_h = f"{scd.relative_humidity:.2f}"
-                except Exception as e:
-                    print(f"  [!] SCD41 Read Error: {e}")
-                    scd = None  # Mark as dead so it auto-recovers next cycle
+                    co2_val, co2_t, co2_h = None, None, None
+                    while scd41_sensor.data_ready:
+                        co2_val = scd41_sensor.CO2
+                        co2_t = scd41_sensor.temperature
+                        co2_h = scd41_sensor.relative_humidity
 
-            # --- UPDATE DISPLAY ---
-            update_display(
-                d_pm1,
-                d_pm25,
-                d_pm4,
-                d_pm10,
-                d_aqi_val,
-                d_aqi_cat,
-                d_co2,
-                d_temp,
-                d_co2_t,
-                d_hum,
-                d_co2_h,
-            )
+                    if co2_val:
+                        co2_ppm_str = str(co2_val)
+                        scd_temp_str = f"{co2_t:.1f}"
+                        scd_hum_str = f"{co2_h:.1f}"
+                        print("  [SCD41] Read successful.")
+                except Exception as e:
+                    print(f"  [SCD41] Error reading: {e}")
+                    scd41_sensor = None
+                    i2c_error_detected = True
+
+            # If I2C failed, flag bus for re-init next cycle
+            if i2c_error_detected:
+                print("  [!] BUS ERROR: I2C set to None.")
+                i2c_bus = None
+
+            # --- CONSOLE DASHBOARD ---
+            print("\n" + "-" * 45)
+            print(f" MONITOR REPORT | {time.strftime('%H:%M:%S')}")
+            print("-" * 45)
+            print(f" AQI: {aqi_value_str} ({aqi_category_str})")
+            print(f" PM1.0:  {pm1_str:5} | PM2.5:  {pm25_str:5}")
+            print(f" PM4.0:  {pm4_str:5} | PM10.0: {pm10_str:5}")
+            print("-" * 45)
+            print(f" CO2:    {co2_ppm_str:5} ppm")
+            print(f" HTU:    {htu_temp_str:5} °C | {htu_hum_str:5} %")
+            print(f" SCD:    {scd_temp_str:5} °C | {scd_hum_str:5} %")
+            print("-" * 45)
 
             # --- SLEEP MATH ---
-            time_spent = time.time() - cycle_start_time
-            sleep_time = max(0, CYCLE_TIME - time_spent)
-
-            print(f"Cycle complete. Sleeping for {int(sleep_time)} seconds...")
+            time_elapsed = time.time() - cycle_start_time
+            sleep_time = max(0, CYCLE_TIME_SECONDS - time_elapsed)
+            print(
+                f"Cycle finished in {time_elapsed:.1f}s. Sleeping {int(sleep_time)}s..."
+            )
             time.sleep(sleep_time)
 
         except KeyboardInterrupt:
-            print("\nShutting down safely...")
-            sps.stop_measurement()
-            if scd:
-                scd.stop_periodic_measurement()
+            print("\nShutdown signal received. Stopping measurements...")
+            sps30_sensor.stop_measurement()
+            if scd41_sensor:
+                scd41_sensor.stop_periodic_measurement()
             sys.exit(0)
         except Exception as e:
-            print(f"Unexpected Loop Error: {e}")
+            print(f"\n[!!!] GLOBAL LOOP ERROR: {e}")
             time.sleep(10)
 
 
