@@ -21,3 +21,4 @@ P .venv/
 
 - .rsync-filter
 - .DS_Store
+- GEMINI.md

@@ -1,0 +1,14 @@
+[Unit]
+Description=Air Quality Monitor Station
+After=network.target
+
+[Service]
+ExecStart=/home/pi/air_test/.venv/bin/python3 /home/pi/air_test/main_log_try.py
+WorkingDirectory=/home/pi/air_test
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=pi
+
+[Install]
+WantedBy=multi-user.target
