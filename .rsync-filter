@@ -1,6 +1,8 @@
-# Protect the virtual environment on the Pi from being deleted
+# Protect the virtual environment and logs on the Pi from being deleted
 
 P .venv/
+P air_quality_log.csv
+P air_monitor.log
 
 # Virtual environment
 
@@ -21,4 +23,10 @@ P .venv/
 
 - .rsync-filter
 - .DS_Store
+
+# Log files and state (Do not upload local versions)
+
+- air_quality_log.csv
+- air_monitor.log
+- air_quality_log_copy.csv
 - GEMINI.md

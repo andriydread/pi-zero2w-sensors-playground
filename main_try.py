@@ -15,6 +15,7 @@ from uc8253c_try import UC8253C_SPI
 CYCLE_TIME_SECONDS = 300  # 5 Minutes as per GEMINI.md
 SPS_WARMUP_SECONDS = 30
 SPS_SAMPLE_COUNT = 10
+HTU_SAMPLE_COUNT = 10     # Increased for better averaging
 WEEKLY_CLEANING_SECONDS = 7 * 24 * 60 * 60
 
 # Configure Logging
@@ -53,10 +54,11 @@ def draw_display_content(draw, width, height, data):
     """Draws sensor data to the image buffer."""
     try:
         # Try to load fonts, fallback to default
+        # In a real setup, paths to .ttf files in /fonts would be better
         f_large = ImageFont.load_default()
         f_small = ImageFont.load_default()
 
-        # Simple text-based layout for now (can be improved with .ttf files)
+        # Border
         draw.rectangle((0, 0, width - 1, height - 1), outline=0, width=2)
 
         y = 10
@@ -84,6 +86,7 @@ def draw_display_content(draw, width, height, data):
         draw.text((10, y), f"Humid: {data.get('humid', 0)} %", fill=0, font=f_small)
         y += 25
 
+        # Timestamp at bottom
         draw.text(
             (width - 80, height - 20), time.strftime("%H:%M"), fill=0, font=f_small
         )
@@ -102,7 +105,9 @@ def get_i2c():
 
 
 def main():
+    logger.info("=" * 50)
     logger.info("AIR MONITORING SYSTEM STARTING")
+    logger.info("=" * 50)
 
     # Init Hardware
     i2c = get_i2c()
@@ -111,9 +116,11 @@ def main():
 
     try:
         if i2c:
+            logger.info("Initializing I2C sensors...")
             scd41 = adafruit_scd4x.SCD4X(i2c)
             scd41.start_periodic_measurement()
             htu21 = HTU21D(i2c)
+            logger.info("I2C sensors initialized.")
     except Exception as e:
         logger.warning(f"I2C Sensor Init Partial Failure: {e}")
 
@@ -135,12 +142,12 @@ def main():
                 sps30.stop_measurement()
                 last_cleaning = time.time()
 
-            # 2. Collect SPS30
-            logger.info("[SPS30] Sensor warmup.")
+            # 2. Collect SPS30 (UART)
+            logger.info("[SPS30] Sensor warmup (30s).")
             sps30.start_measurement()
             time.sleep(SPS_WARMUP_SECONDS)
+            
             logger.info(f"[SPS30] Collecting {SPS_SAMPLE_COUNT} samples.")
-
             pm25_list, pm10_list = [], []
             for i in range(SPS_SAMPLE_COUNT):
                 success, data = sps30.read_values()
@@ -162,34 +169,51 @@ def main():
             else:
                 logger.error("[SPS30] Read Failed: No samples collected.")
 
-            # 3. Collect I2C
+            # 3. Collect SCD41 (I2C)
             if scd41:
                 try:
+                    logger.info("[SCD41] Checking data ready...")
+                    # Note: We check data_ready to avoid blocking indefinitely
                     if scd41.data_ready:
+                        logger.info("[SCD41] Reading values...")
                         sensor_data["co2"] = scd41.CO2
                         sensor_data["temp_scd"] = round(scd41.temperature, 1)
                         sensor_data["humid_scd"] = round(scd41.relative_humidity, 1)
+                        logger.info("[SCD41] Read Success.")
+                    else:
+                        logger.info("[SCD41] Data not ready this cycle.")
                 except Exception as e:
                     logger.warning(f"[SCD41] Read Failed: {e}")
 
+            # 4. Collect HTU21D (I2C) with Averaging
             if htu21:
                 try:
-                    sensor_data["temp"] = round(htu21.temperature, 1)
-                    sensor_data["humid"] = round(htu21.relative_humidity, 1)
+                    logger.info(f"[HTU21] Collecting {HTU_SAMPLE_COUNT} samples for averaging...")
+                    h_samples, t_samples = [], []
+                    for i in range(HTU_SAMPLE_COUNT):
+                        t_samples.append(htu21.temperature)
+                        h_samples.append(htu21.relative_humidity)
+                        time.sleep(0.2) # Small delay between sub-samples
+                    
+                    if t_samples:
+                        sensor_data["temp"] = round(sum(t_samples) / len(t_samples), 1)
+                        sensor_data["humid"] = round(sum(h_samples) / len(h_samples), 1)
+                        logger.info(f"[HTU21] Read Success ({len(t_samples)} samples averaged).")
                 except Exception as e:
                     logger.warning(f"[HTU21] Read Failed: {e}")
 
-            # 4. Update Display
+            # 5. Update Display (SPI)
             try:
                 img = Image.new("1", (display.width, display.height), 255)
                 draw = ImageDraw.Draw(img)
                 draw_display_content(draw, display.width, display.height, sensor_data)
 
-                logger.info("Updating Display.")
+                logger.info("[DISPLAY] Updating screen.")
                 display.update(img)
                 display.sleep()
+                logger.info("[DISPLAY] Update Success & Sleeping.")
             except Exception as e:
-                logger.error(f"Display Update Failed: {e}")
+                logger.error(f"[DISPLAY] Update Failed: {e}")
 
         except Exception as e:
             logger.error(f"Global Loop Error: {e}")
@@ -198,8 +222,8 @@ def main():
         # Timing
         elapsed = time.time() - cycle_start
         sleep_time = max(10, CYCLE_TIME_SECONDS - elapsed)
-        logger.info(f"Cycle complete. Sleeping {int(sleep_time)}s...")
-        logger.info("=" * 70)
+        logger.info(f"Cycle complete in {elapsed:.1f}s. Sleeping {int(sleep_time)}s...")
+        logger.info("-" * 70)
         time.sleep(sleep_time)
 
 
