@@ -15,7 +15,7 @@ from sps30_try import SPS30_UART
 from uc8253c_try import UC8253C_SPI
 
 # --- CONFIGURATION ---
-CYCLE_TIME_SECONDS = 60  # 5 Minutes as per GEMINI.md
+CYCLE_TIME_SECONDS = 60  # 60 for test and 300 for deploy
 SPS_WARMUP_SECONDS = 30
 SPS_SAMPLE_COUNT = 10
 HTU_SAMPLE_COUNT = 10
