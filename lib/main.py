@@ -6,7 +6,7 @@ import adafruit_scd4x
 import board
 from adafruit_htu21d import HTU21D
 
-from sps30 import SPS30_UART
+from lib.sps30 import SPS30_UART
 
 # --- CONFIGURATION ---
 CYCLE_TIME_SECONDS = 60  # How often the whole system runs

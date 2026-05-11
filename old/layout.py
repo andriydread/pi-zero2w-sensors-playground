@@ -3,7 +3,7 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-from uc8253c import UC8253C
+from lib.uc8253c import UC8253C
 
 # --- CONFIGURATION & LOGGING ---
 logging.basicConfig(

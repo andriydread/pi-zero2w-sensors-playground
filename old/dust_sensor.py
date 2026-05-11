@@ -1,7 +1,7 @@
 import sys
 import time
 
-from sps30 import SPS30_UART
+from lib.sps30 import SPS30_UART
 
 # --- CONFIGURATION ---
 SERIAL_PORT = "/dev/serial0"

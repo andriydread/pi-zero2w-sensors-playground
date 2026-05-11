@@ -2,7 +2,7 @@ import time
 
 from PIL import Image, ImageDraw, ImageFont
 
-from uc8253c import UC8253C_SPI
+from lib.uc8253c import UC8253C_SPI
 
 
 def main():
