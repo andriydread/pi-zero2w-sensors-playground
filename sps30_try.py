@@ -2,20 +2,6 @@
 SPS30 UART Driver
 This library handles communication with the Sensirion SPS30 particulate matter sensor
 using the SHDLC (Sensirion High-Level Data Control) protocol over UART.
-
-SHDLC is a frame-based protocol. Each frame is wrapped in start/end flags (0x7E).
-Because the data itself might contain 0x7E, "Byte Stuffing" is used to escape it.
-
-Frame Structure:
-[0x7E] [ADDR] [CMD] [LEN] [DATA...] [CHK] [0x7E]
-- ADDR: Slave address (0x00 for SPS30).
-- CMD:  Command ID (e.g., 0x03 for 'Read Measured Values').
-- LEN:  Length of the DATA field.
-- CHK:  Checksum (NOT of the sum of bytes before stuffing).
-
-Byte Stuffing:
-- If 0x7E, 0x7D, 0x11, or 0x13 appear in the payload, they are replaced by 0x7D
-  followed by the original byte XORed with 0x20.
 """
 
 import logging
@@ -25,12 +11,7 @@ import time
 import serial
 
 # --- USER CONFIGURATION ---
-
-# USE_LOGGING: If True, uses Python's 'logging' module. If False, uses 'print'.
 USE_LOGGING = True
-
-# ERRORS_ONLY: If True, only ERROR level messages are output.
-# Set to False to see INFO messages (connection status, start/stop, etc.)
 ERRORS_ONLY = True
 
 # Internal logging setup
@@ -44,13 +25,9 @@ if not logger.handlers and USE_LOGGING:
 
 
 def _output(message, is_error=False):
-    """
-    Centralized output helper.
-    Respects ERRORS_ONLY and USE_LOGGING settings.
-    """
+    """Centralized output helper."""
     if ERRORS_ONLY and not is_error:
         return
-
     if USE_LOGGING:
         if is_error:
             logger.error(message)
@@ -64,20 +41,15 @@ def _output(message, is_error=False):
 class SPS30_UART:
     """
     High-level driver for the Sensirion SPS30 Particulate Matter Sensor.
-    Handles serial connection, SHDLC framing, and data conversion.
+    Refactored for maximum stability and error recovery.
     """
 
     def __init__(self, port="/dev/serial0", baud_rate=115200, timeout=2):
-        """
-        Initialize and open the serial connection.
-        :param port: Path to serial device (e.g., '/dev/ttyUSB0' or '/dev/serial0').
-        :param baud_rate: Default for SPS30 is 115200.
-        :param timeout: Seconds to wait for a response before giving up.
-        """
         self.port = port
         self.baud_rate = baud_rate
         self.timeout = timeout
         self.ser = None
+        self.is_measuring = False  # Track sensor state
         self._connect()
 
     def __enter__(self):
@@ -96,12 +68,14 @@ class SPS30_UART:
                 _output(f"Error closing serial port: {e}", is_error=True)
 
     def _connect(self):
-        """Attempts to open the serial port. Re-opens if already open."""
+        """Attempts to open the serial port with a short grace period."""
         if self.ser and self.ser.is_open:
             try:
                 self.ser.close()
             except:
                 pass
+            time.sleep(0.1)  # Grace period for OS to release port
+
         try:
             self.ser = serial.Serial(
                 self.port, baudrate=self.baud_rate, timeout=self.timeout
@@ -113,18 +87,11 @@ class SPS30_UART:
             return False
 
     def _calc_checksum(self, data):
-        """
-        Calculates the SHDLC checksum.
-        Algorithm: Sum all bytes in the frame (ADDR, CMD, LEN, DATA),
-        take the Least Significant Byte (LSB), and bitwise NOT it.
-        """
+        """Calculates SHDLC checksum (NOT of sum, bitwise NOT of LSB)."""
         return (~(sum(data) & 0xFF)) & 0xFF
 
     def _stuff_data(self, data):
-        """
-        Applies SHDLC Byte Stuffing to escape special characters.
-        Escapes: 0x7E (Flag), 0x7D (Escape), 0x11 (XON), 0x13 (XOFF).
-        """
+        """Applies SHDLC Byte Stuffing."""
         out = bytearray()
         for b in data:
             if b in [0x7E, 0x7D, 0x11, 0x13]:
@@ -135,9 +102,7 @@ class SPS30_UART:
         return out
 
     def _unstuff_data(self, data):
-        """
-        Reverses SHDLC Byte Stuffing to retrieve original payload.
-        """
+        """Reverses SHDLC Byte Stuffing."""
         out = bytearray()
         i = 0
         while i < len(data):
@@ -150,79 +115,42 @@ class SPS30_UART:
             i += 1
         return out
 
-    def send_command(self, cmd_id, data=None):
-        """
-        Wraps data into an SHDLC frame and writes to the UART.
-        :param cmd_id: The Command ID (int).
-        :param data: List of bytes for the data field.
-        :return: (bool success, str info)
-        """
+    def _send_frame(self, cmd_id, data=None):
+        """Low-level method to write a frame to UART."""
         if data is None:
             data = []
-
         if not self.ser or not self.ser.is_open:
             if not self._connect():
                 return False, "SERIAL_PORT_NOT_OPEN"
-
         try:
-            # Clear buffers to prevent reading 'ghost' data from previous failed attempts
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
-
-            # 1. Build the frame content: [Address] [Command] [Length] [Data...]
             frame_content = [0x00, cmd_id, len(data)] + data
-
-            # 2. Calculate Checksum of the content
             chk = self._calc_checksum(frame_content)
-
-            # 3. Apply Byte Stuffing to the content + checksum
             stuffed_payload = self._stuff_data(frame_content + [chk])
-
-            # 4. Add Start/End Flags
             full_frame = bytearray([0x7E] + list(stuffed_payload) + [0x7E])
-
-            # 5. Send to hardware
             self.ser.write(full_frame)
             return True, "OK"
         except serial.SerialException as e:
-            _output(f"Serial write error: {e}", is_error=True)
             self._connect()
             return False, f"WRITE_ERROR: {e}"
 
-    def read_response(self):
-        """
-        Reads from UART until an SHDLC frame is complete, then parses it.
-        :return: (bool success, bytearray data OR str error)
-        """
+    def _read_frame(self):
+        """Low-level method to read and validate a frame from UART."""
         if not self.ser or not self.ser.is_open:
             return False, "SERIAL_PORT_NOT_OPEN"
-
         try:
-            # 1. Seek the Start Flag (0x7E)
-            # read_until will block until flag is found or timeout occurs
             start_flag = self.ser.read_until(b"\x7e")
             if not start_flag:
                 return False, "TIMEOUT_NO_RESPONSE_START"
-
-            # 2. Read until the End Flag (0x7E)
             payload_raw = self.ser.read_until(b"\x7e")
             if not payload_raw.endswith(b"\x7e"):
                 return False, "TIMEOUT_INCOMPLETE_FRAME"
-
-            # 3. Remove Byte Stuffing
-            # We strip the trailing 0x7E flag before unstuffing
             payload = self._unstuff_data(payload_raw[:-1])
-
-            # Minimum response frame: ADDR(1) + CMD(1) + STATE(1) + LEN(1) + CHK(1) = 5 bytes
             if len(payload) < 5:
                 return False, "FRAME_TOO_SHORT"
-
-            # 4. Integrity Check (Checksum)
             if self._calc_checksum(payload[:-1]) != payload[-1]:
                 return False, "CHECKSUM_MISMATCH"
-
-            # 5. Check State Byte (Status)
-            # 0x00 = Success. Anything else is a sensor-side error.
             status_byte = payload[2]
             if status_byte != 0x00:
                 error_map = {
@@ -237,227 +165,140 @@ class SPS30_UART:
                     status_byte, f"Unknown error code {status_byte}"
                 )
                 return False, f"SENSOR_ERROR: {err_msg}"
-
-            # 6. Extract the Data Field
             data_len = payload[3]
             data = payload[4 : 4 + data_len]
             return True, data
-
         except serial.SerialException as e:
-            _output(f"Serial read error: {e}", is_error=True)
             self._connect()
             return False, f"READ_ERROR: {e}"
         except Exception as e:
-            _output(f"Unexpected parsing error: {e}", is_error=True)
             return False, f"UNEXPECTED_ERROR: {e}"
+
+    def _execute_command(self, cmd_id, data=None, retries=3):
+        """Unified send-receive-retry loop for bulletproof communication."""
+        last_err = "UNKNOWN"
+        for attempt in range(retries):
+            success, err = self._send_frame(cmd_id, data)
+            if not success:
+                last_err = err
+                time.sleep(0.2)
+                continue
+            success, res = self._read_frame()
+            if success:
+                return True, res
+            last_err = res
+            _output(
+                f"Command {hex(cmd_id)} failed (Attempt {attempt + 1}/{retries}): {res}",
+                is_error=True,
+            )
+            time.sleep(0.2)
+        return False, last_err
 
     # --- SENSOR CONTROL COMMANDS ---
 
     def start_measurement(self):
-        """
-        Starts the fan and begins PM measurement.
-        Command 0x00 with data [0x01, 0x03] sets output format to IEEE754 floats.
-        """
-        success, err = self.send_command(0x00, [0x01, 0x03])
+        """Starts the fan and measurement mode."""
+        if self.is_measuring:
+            _output("Sensor already measuring.")
+            return True
+        success, res = self._execute_command(0x00, [0x01, 0x03])
         if success:
+            self.is_measuring = True
             _output("Measurement mode started.")
-            time.sleep(1)  # Recommended delay to allow fan to spin up
-        else:
-            _output(f"Failed to start measurement: {err}", is_error=True)
+            time.sleep(1)
         return success
 
     def stop_measurement(self):
-        """Stops the measurement mode and the fan."""
-        success, err = self.send_command(0x01)
+        """Stops the fan and measurement mode."""
+        success, res = self._execute_command(0x01)
         if success:
+            self.is_measuring = False
             _output("Measurement mode stopped.")
             time.sleep(1)
-        else:
-            _output(f"Failed to stop measurement: {err}", is_error=True)
         return success
 
     def read_values(self):
-        """
-        Reads the latest PM concentration values.
-        SPS30 returns 10 float values (40 bytes):
-        [PM1.0, PM2.5, PM4.0, PM10.0, NC0.5, NC1.0, NC2.5, NC4.0, NC10.0, Typical Particle Size]
-        Mass Concentration (PM) is in ug/m3.
-        Number Concentration (NC) is in #/cm3.
-        """
-        sent, err = self.send_command(0x03)
-        if not sent:
-            _output(f"Failed to send Read Values command: {err}", is_error=True)
-            return False, f"CMD_SEND_FAILED: {err}"
-
-        success, res = self.read_response()
+        """Reads PM values. Ensures exactly 40 bytes are received."""
+        success, res = self._execute_command(0x03)
         if success:
-            if len(res) >= 40:
+            if len(res) == 40:
                 try:
-                    # '>ffffffffff': Big-endian, 10 single-precision floats
-                    data = struct.unpack(">ffffffffff", res)
-                    return True, data
+                    return True, struct.unpack(">ffffffffff", res)
                 except struct.error as e:
-                    _output(f"Data decode error: {e}", is_error=True)
-                    return False, f"DATA_DECODE_ERROR: {e}"
-            else:
-                _output(f"Incomplete data received: {len(res)} bytes", is_error=True)
-                return False, f"INCOMPLETE_DATA: {len(res)} bytes received"
-
-        _output(f"Failed to read values: {res}", is_error=True)
+                    return False, f"DECODE_ERROR: {e}"
+            return False, f"INVALID_LENGTH: Expected 40, got {len(res)}"
         return False, res
 
     def get_auto_cleaning_interval(self):
-        """
-        Reads the current auto-cleaning interval in seconds.
-        :return: (bool success, int interval)
-        """
-        sent, err = self.send_command(0x80)
-        if not sent:
-            _output(f"Failed to send Get Cleaning Interval command: {err}", is_error=True)
-            return False, err
-
-        success, res = self.read_response()
-        if success:
-            if len(res) == 4:
-                interval = struct.unpack(">I", res)[0]
-                return True, interval
-            return False, "INVALID_RESPONSE_LENGTH"
-        _output(f"Failed to get cleaning interval: {res}", is_error=True)
-        return False, res
+        """Reads auto-cleaning interval (uint32)."""
+        success, res = self._execute_command(0x80)
+        if success and len(res) == 4:
+            return True, struct.unpack(">I", res)[0]
+        return False, res or "INVALID_RESPONSE"
 
     def set_auto_cleaning_interval(self, seconds):
-        """
-        Sets the auto-cleaning interval in seconds.
-        Default is 604800 (1 week). Set to 0 to disable.
-        :param seconds: Interval in seconds (uint32).
-        :return: bool success
-        """
-        # Security/Validation: Ensure within uint32 range
+        """Sets auto-cleaning interval (uint32)."""
         if not isinstance(seconds, int) or seconds < 0 or seconds > 0xFFFFFFFF:
-            _output(f"Invalid cleaning interval: {seconds}. Must be uint32.", is_error=True)
             return False
-
         data = list(struct.pack(">I", seconds))
-        success, err = self.send_command(0x80, data)
+        success, res = self._execute_command(0x80, data)
         if success:
-            success, res = self.read_response()
-            if success:
-                _output(f"Auto-cleaning interval set to {seconds}s.")
-                return True
-            err = res
-        
-        _output(f"Failed to set cleaning interval: {err}", is_error=True)
-        return False
+            _output(f"Auto-cleaning interval set to {seconds}s.")
+        return success
 
     def get_version(self):
-        """
-        Reads firmware, hardware and SHDLC versions.
-        :return: (bool success, dict version_info)
-        """
-        sent, err = self.send_command(0xD1)
-        if not sent:
-            _output(f"Failed to send Get Version command: {err}", is_error=True)
-            return False, err
-
-        success, res = self.read_response()
-        if success:
-            if len(res) >= 7:
-                v = {
-                    "firmware": f"{res[0]}.{res[1]}",
-                    "hardware": f"{res[3]}.{res[4]}",
-                    "shdlc": f"{res[5]}.{res[6]}"
-                }
-                return True, v
-            return False, "INVALID_VERSION_DATA"
-        
-        _output(f"Failed to get version: {res}", is_error=True)
+        """Reads firmware, hardware and SHDLC versions."""
+        success, res = self._execute_command(0xD1)
+        if success and len(res) >= 7:
+            return True, {
+                "firmware": f"{res[0]}.{res[1]}",
+                "hardware": f"{res[3]}.{res[4]}",
+                "shdlc": f"{res[5]}.{res[6]}",
+            }
         return False, res
 
     def get_status_register(self):
-        """
-        Reads the device status register.
-        Reading it clears the flags.
-        :return: (bool success, dict status_flags)
-        """
-        sent, err = self.send_command(0xD2)
-        if not sent:
-            _output(f"Failed to send Read Status command: {err}", is_error=True)
-            return False, err
-
-        success, res = self.read_response()
-        if success:
-            # Status is 4 or 5 bytes (uint32 bitmask)
-            if len(res) >= 4:
-                status_val = struct.unpack(">I", res[:4])[0]
-                flags = {
-                    "fan_error": bool(status_val & (1 << 4)),
-                    "laser_error": bool(status_val & (1 << 5)),
-                    "internal_error": bool(status_val & (1 << 21)),
-                    "raw": hex(status_val)
-                }
-                if any([flags["fan_error"], flags["laser_error"], flags["internal_error"]]):
-                    _output(f"Sensor status warning: {flags}", is_error=True)
-                return True, flags
-            return False, "INVALID_STATUS_DATA"
-        
-        _output(f"Failed to read status: {res}", is_error=True)
+        """Reads and clears the status register flags."""
+        success, res = self._execute_command(0xD2)
+        if success and len(res) >= 4:
+            status_val = struct.unpack(">I", res[:4])[0]
+            flags = {
+                "fan_error": bool(status_val & (1 << 4)),
+                "laser_error": bool(status_val & (1 << 5)),
+                "internal_error": bool(status_val & (1 << 21)),
+                "raw": hex(status_val),
+            }
+            if any([flags["fan_error"], flags["laser_error"], flags["internal_error"]]):
+                _output(f"Sensor status warning: {flags}", is_error=True)
+            return True, flags
         return False, res
 
     def start_fan_cleaning(self):
-        """
-        Manually triggers a 10-second fan cleaning cycle.
-        Note: Sensor MUST be in measurement mode already.
-        """
+        """Triggers manual cleaning. Sensor MUST be in measurement mode."""
+        if not self.is_measuring:
+            _output("Cannot clean fan: Not in measurement mode.", is_error=True)
+            return False
         _output("Starting manual fan cleaning cycle...")
-        success, err = self.send_command(0x56)
-        if success:
-            # We must wait for the acknowledgment first
-            success, res = self.read_response()
-            if success:
-                _output("Fan cleaning cycle initiated.")
-                return True
-            err = res
-        
-        _output(f"Failed to start fan cleaning: {err}", is_error=True)
-        return False
+        return self._execute_command(0x56)[0]
 
     def device_reset(self):
-        """Performs a software reset (simulates power cycle)."""
+        """Performs a software reset."""
         _output("Requesting device reset...")
-        success, err = self.send_command(0xD3)
+        success, res = self._execute_command(0xD3)
         if success:
-            # Note: SPS30 might not send an SHDLC response for reset before rebooting
-            # but usually it ACKs the command first.
-            _output("Device reset command sent. Waiting 3s...")
+            self.is_measuring = False
             time.sleep(3)
             return True
-        
-        _output(f"Failed to reset device: {err}", is_error=True)
         return False
 
     def read_device_info(self, info_type=0x03):
-        """
-        Reads identifying strings from the sensor.
-        info_type: 0x01 = Product Name, 0x02 = Article Code, 0x03 = Serial Number
-        """
+        """Reads identifying strings (0x01: Name, 0x02: Article, 0x03: Serial)."""
         if info_type not in [0x01, 0x02, 0x03]:
-            _output(f"Invalid info_type: {info_type}", is_error=True)
             return False, "INVALID_INFO_TYPE"
-
-        sent, err = self.send_command(0xD0, [info_type])
-        if not sent:
-            _output(f"Failed to send Read Device Info command: {err}", is_error=True)
-            return False, err
-
-        success, res = self.read_response()
+        success, res = self._execute_command(0xD0, [info_type])
         if success:
             try:
-                # ASCII encoded, null-terminated string
-                val = res.decode("ascii").rstrip("\x00")
-                return True, val
-            except Exception as e:
-                _output(f"String decode error: {e}", is_error=True)
-                return False, f"STRING_DECODE_ERROR: {e}"
-        
-        _output(f"Failed to read device info: {res}", is_error=True)
+                return True, res.decode("ascii").rstrip("\x00")
+            except:
+                return False, "STRING_DECODE_ERROR"
         return False, res
