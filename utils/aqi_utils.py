@@ -52,13 +52,13 @@ def calculate_aqi(pm25, pm10):
 
 def get_aqi_category(aqi):
     if aqi <= 50:
-        return "Good", "#00e400"
+        return "Good"
     if aqi <= 100:
-        return "Moderate", "#ffff00"
+        return "Moderate"
     if aqi <= 150:
-        return "Unhealthy for Sensitive Groups", "#ff7e00"
+        return "Unhealthy for Sensitive Groups"
     if aqi <= 200:
-        return "Unhealthy", "#ff0000"
+        return "Unhealthy"
     if aqi <= 300:
-        return "Very Unhealthy", "#8f3f97"
-    return "Hazardous", "#7e0023"
+        return "Very Unhealthy"
+    return "Hazardous"

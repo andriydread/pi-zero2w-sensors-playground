@@ -3,8 +3,8 @@ Description=Air Quality Monitor Station
 After=network.target
 
 [Service]
-ExecStart=/home/pi/air_test/.venv/bin/python3 /home/pi/air_test/main_log_try.py
-WorkingDirectory=/home/pi/air_test
+ExecStart=/home/pi/air_station/.venv/bin/python3 /home/pi/air_station/main.py
+WorkingDirectory=/home/pi/air_station
 StandardOutput=inherit
 StandardError=inherit
 RestartSec=10
