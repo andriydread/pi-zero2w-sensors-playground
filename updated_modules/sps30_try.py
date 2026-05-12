@@ -206,6 +206,11 @@ class SPS30_UART:
             self.is_measuring = True
             _output("Measurement mode started.")
             time.sleep(1)
+        elif "0x43" in str(res) or "Command not allowed" in str(res):
+            # 0x43 means it's already measuring. Treat as success.
+            self.is_measuring = True
+            _output("Sensor was already measuring.")
+            return True
         return success
 
     def stop_measurement(self):

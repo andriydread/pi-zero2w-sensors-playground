@@ -1,16 +1,16 @@
 """
-UC8253C E-Paper Display Driver - Human Readable Version
+UC8253C E-Paper Display Driver
 This library manages the WeAct 3.7" E-Paper display using the UC8253C controller.
 
 Hardware Architecture & Concepts:
 ---------------------------------
 1. SPI Interface: Uses 4-wire SPI (CS, SCLK, MOSI, DC).
 2. DC Pin: Data/Command pin. Low = Command, High = Data.
-3. Busy Pin: The hardware sets this LOW when it is busy performing a physical 
+3. Busy Pin: The hardware sets this LOW when it is busy performing a physical
    refresh or internal calculation. We must wait for it to go HIGH.
 4. Ping-Pong Differential Buffering:
    The UC8253C has two internal memory banks (Buffer 1 and Buffer 2). To perform
-   a partial update, the controller compares these two buffers. 
+   a partial update, the controller compares these two buffers.
    - Buffer 1 usually holds the 'current' image on the screen.
    - Buffer 2 is updated with the 'new' image.
    - The controller then refreshes only the pixels that changed.
@@ -18,7 +18,7 @@ Hardware Architecture & Concepts:
 
 Refresh Modes:
 --------------
-- FULL:    Highest quality. Flashes the whole screen (Black/White/Black). 
+- FULL:    Highest quality. Flashes the whole screen (Black/White/Black).
            Removes all ghosting.
 - FAST:    Faster refresh (~1s). Single flash. Good for frequent updates.
 - PARTIAL: No flashing. Extremely fast (<0.5s). Best for clocks/real-time data.
@@ -27,6 +27,7 @@ Refresh Modes:
 
 import logging
 import time
+
 import RPi.GPIO as GPIO
 import spidev
 
@@ -112,7 +113,7 @@ class UC8253C_SPI:
 
         # 1 bit per pixel (240 * 416 / 8 = 12480 bytes)
         self.buffer_size = (self._NATIVE_WIDTH * self._NATIVE_HEIGHT) // 8
-        self.buffer_old = bytearray([0xFF] * self.buffer_size) # Start with 'White'
+        self.buffer_old = bytearray([0xFF] * self.buffer_size)  # Start with 'White'
 
         try:
             self._init_spi(spi_bus, spi_device)
@@ -150,7 +151,7 @@ class UC8253C_SPI:
         self.spi.writebytes([cmd])
 
         if data is not None:
-            GPIO.output(self.dc_pin, GPIO.HIGH) # Data mode
+            GPIO.output(self.dc_pin, GPIO.HIGH)  # Data mode
             if isinstance(data, int):
                 self.spi.writebytes([data])
             elif isinstance(data, list):
@@ -161,7 +162,7 @@ class UC8253C_SPI:
 
     def _wait_busy(self, timeout_secs=5):
         """
-        Polls the Busy pin. 
+        Polls the Busy pin.
         Note: The pin is LOW when the display is doing work.
         """
         time.sleep(0.02)
@@ -258,7 +259,7 @@ class UC8253C_SPI:
 
         self._write(cmd_old, white_payload)
         self._write(cmd_new, white_payload)
-        
+
         self._write(self._CMD_DISPLAY_REFRESH)
         self._wait_busy()
 
@@ -275,7 +276,10 @@ class UC8253C_SPI:
         Automatically handles rotation, bit-depth conversion, and differential updates.
         """
         if image.width != self.width or image.height != self.height:
-            _output(f"Size Error: Image is {image.width}x{image.height}, screen is {self.width}x{self.height}", is_error=True)
+            _output(
+                f"Size Error: Image is {image.width}x{image.height}, screen is {self.width}x{self.height}",
+                is_error=True,
+            )
             return False
 
         if self.is_sleeping:
@@ -296,7 +300,9 @@ class UC8253C_SPI:
         else:
             cmd_old, cmd_new = self._CMD_DATA_START_1, self._CMD_DATA_START_2
 
-        _output(f"Pusing image to hardware (Bank {'2' if self._is_swapped else '1'})...")
+        _output(
+            f"Pusing image to hardware (Bank {'2' if self._is_swapped else '1'})..."
+        )
         # Write the 'previous' image to one bank and 'new' image to the other
         self._write(cmd_old, self.buffer_old)
         self._write(cmd_new, current_buffer)
@@ -318,7 +324,7 @@ class UC8253C_SPI:
         _output("Display entering Deep Sleep.")
         self._write(self._CMD_POWER_OFF)
         self._wait_busy()
-        self._write(self._CMD_DEEP_SLEEP, 0xA5) # 0xA5 is the magic sleep byte
+        self._write(self._CMD_DEEP_SLEEP, 0xA5)  # 0xA5 is the magic sleep byte
         self.is_sleeping = True
 
     def close(self):

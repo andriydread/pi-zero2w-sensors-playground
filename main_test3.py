@@ -110,7 +110,14 @@ class HardwareManager:
             # HTU21D
             try:
                 self.htu21 = HTU21D(self.i2c)
-                logger.info("HTU21D Initialized.")
+                # Attempt a soft reset to clear any hung state (Standard HTU21D reset is 0xFE)
+                try:
+                    if hasattr(self.i2c, "writeto"):
+                        self.i2c.writeto(0x40, bytes([0xFE]))
+                    time.sleep(0.1)
+                except:
+                    pass
+                logger.info("HTU21D Initialized (Reset sent).")
             except Exception as e:
                 logger.warning(f"HTU21D Init Failed: {e}")
                 self.htu21 = None
@@ -129,15 +136,15 @@ def log_to_csv(data):
         "timestamp",
         "aqi",
         "aqi_cat",
-        "pm1.0",
-        "pm2.5",
-        "pm4.0",
-        "pm10.0",
-        "nc0.5",
-        "nc1.0",
-        "nc2.5",
-        "nc4.0",
-        "nc10.0",
+        "pm10",
+        "pm25",
+        "pm40",
+        "pm100",
+        "nc05",
+        "nc10",
+        "nc25",
+        "nc40",
+        "nc100",
         "tps",
         "co2",
         "temp_scd",
@@ -211,22 +218,22 @@ def main():
                     ]
                     sensor_data.update(
                         {
-                            "pm1.0": avg_vals[0],
-                            "pm2.5": avg_vals[1],
-                            "pm4.0": avg_vals[2],
-                            "pm10.0": avg_vals[3],
-                            "nc0.5": avg_vals[4],
-                            "nc1.0": avg_vals[5],
-                            "nc2.5": avg_vals[6],
-                            "nc4.0": avg_vals[7],
-                            "nc10.0": avg_vals[8],
+                            "pm10": avg_vals[0],
+                            "pm25": avg_vals[1],
+                            "pm40": avg_vals[2],
+                            "pm100": avg_vals[3],
+                            "nc05": avg_vals[4],
+                            "nc10": avg_vals[5],
+                            "nc25": avg_vals[6],
+                            "nc40": avg_vals[7],
+                            "nc100": avg_vals[8],
                             "tps": avg_vals[9],
                         }
                     )
-                    aqi_val, aqi_cat = calculate_us_aqi_pm25(sensor_data["pm25"])
+                    aqi_val, aqi_cat = calculate_us_aqi_pm25(sensor_data.get("pm25"))
                     sensor_data["aqi"] = aqi_val
                     sensor_data["aqi_cat"] = aqi_cat
-                    logger.info(f"[SPS30] Success. PM2.5: {sensor_data['pm25']}")
+                    logger.info(f"[SPS30] Success. PM2.5: {sensor_data.get('pm25')}")
                 else:
                     logger.error("[SPS30] No valid samples collected.")
 
@@ -252,9 +259,15 @@ def main():
             # 4. Collect HTU21D Data (I2C)
             if hw.htu21:
                 t_samples, h_samples = [], []
+                logger.info(f"[HTU21] Collecting {HTU_SAMPLE_COUNT} samples...")
                 for i in range(HTU_SAMPLE_COUNT):
-                    t = call_with_timeout(lambda: hw.htu21.temperature, timeout=2)
-                    h = call_with_timeout(lambda: hw.htu21.relative_humidity, timeout=2)
+                    t = call_with_timeout(lambda: hw.htu21.temperature, timeout=2, default="TIMEOUT")
+                    h = call_with_timeout(lambda: hw.htu21.relative_humidity, timeout=2, default="TIMEOUT")
+                    
+                    if t == "TIMEOUT" or h == "TIMEOUT":
+                        logger.warning(f"[HTU21] Timeout at sample {i+1}. Aborting sampling loop.")
+                        break
+
                     if isinstance(t, (int, float)):
                         t_samples.append(t)
                     if isinstance(h, (int, float)):
@@ -269,7 +282,8 @@ def main():
                     sensor_data["humid"] = sensor_data["humid_htu"]
                     logger.info(f"[HTU21] Success. Temp: {sensor_data['temp_htu']}")
                 else:
-                    logger.warning("[HTU21] No samples collected.")
+                    logger.warning("[HTU21] No valid HTU21D data collected.")
+
 
             # 5. Handle I2C Bus Resets if needed
             if not sensor_data.get("co2") and not sensor_data.get("temp_htu"):
