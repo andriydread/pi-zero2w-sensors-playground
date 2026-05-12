@@ -3,5 +3,5 @@ RPi.GPIO
 spidev
 Pillow
 adafruit-blinka
-adafruit-circuitpython-htu21d
+# adafruit-circuitpython-htu21d
 adafruit-circuitpython-scd4x
