@@ -214,7 +214,7 @@ class UC8253C_SPI:
 
     # --- Public API ---
 
-    def clear(self):
+    def clear(self, auto_sleep=True):
         """Fills the entire display with White to give us a clean slate."""
         if self.is_sleeping:
             if not self._wake_up():
@@ -225,8 +225,6 @@ class UC8253C_SPI:
 
         white_payload = bytearray([0xFF] * self.buffer_size)
 
-        # To clear the screen properly, we must fill BOTH memory banks with white.
-        # This resets the differential calculation logic.
         if self._is_swapped:
             cmd_old, cmd_new = self._CMD_DATA_START_2, self._CMD_DATA_START_1
         else:
@@ -246,7 +244,11 @@ class UC8253C_SPI:
         # Put the hardware back into whatever mode the user requested
         self._apply_current_mode()
 
-    def update(self, image):
+        # --- NEW: Auto sleep feature ---
+        if auto_sleep:
+            self.sleep()
+
+    def update(self, image, auto_sleep=True):
         """
         Takes a Pillow (PIL) Image, converts it to raw 1-bit data, and pushes it
         to the screen using differential updates.
@@ -263,34 +265,32 @@ class UC8253C_SPI:
             self._apply_current_mode()
 
         try:
-            # 1. Rotate image to match physical landscape/portrait orientation
             if self.rotation != 0:
                 image = image.rotate(self.rotation, expand=True)
-
-            # 2. Convert to 1-bit Black and White and extract the raw bytes
             current_buffer = bytearray(image.convert("1").tobytes())
         except Exception as e:
             self._print_error(f"Failed to process image data: {e}")
             return False
 
-        # 3. Figure out which hardware bank gets the old image vs the new image
         if self._is_swapped:
             cmd_old, cmd_new = self._CMD_DATA_START_2, self._CMD_DATA_START_1
         else:
             cmd_old, cmd_new = self._CMD_DATA_START_1, self._CMD_DATA_START_2
 
-        # 4. Push the data over SPI
         self._write(cmd_old, self.buffer_old)
         self._write(cmd_new, current_buffer)
 
-        # 5. Tell the screen to physically refresh
         self._write(self._CMD_DISPLAY_REFRESH)
         if not self._wait_busy():
             return False
 
-        # 6. Swap local tracking for the next time we update
         self.buffer_old = current_buffer
         self._is_swapped = not self._is_swapped
+
+        # --- NEW: Auto sleep feature ---
+        if auto_sleep:
+            self.sleep()
+
         return True
 
     def sleep(self):

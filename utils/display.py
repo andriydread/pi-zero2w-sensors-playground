@@ -1,14 +1,11 @@
-import logging
 from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
-from utils.aqi_utils import get_aqi_category
-
-logger = logging.getLogger("AirStation")
+# Import your existing AQI utility
 
 
-def create_display_image(width, height, data, font_path):
+def create_display_image(width, height, data, font_path=None):
     """
     Creates a Pillow image for the e-paper display.
     Expects data dict with: aqi, temp, hum, pm25, pm10, co2
@@ -17,35 +14,35 @@ def create_display_image(width, height, data, font_path):
     image = Image.new("1", (width, height), 255)
     draw = ImageDraw.Draw(image)
 
+    # Attempt to load fonts, fallback silently to default if it fails
     try:
         font_large = ImageFont.truetype(font_path, 48)
         font_medium = ImageFont.truetype(font_path, 24)
         font_small = ImageFont.truetype(font_path, 18)
         font_tiny = ImageFont.truetype(font_path, 14)
-    except Exception as e:
-        logger.warning(f"Could not load font {font_path}: {e}. Using default.")
+    except Exception:
         font_large = font_medium = font_small = font_tiny = ImageFont.load_default()
 
     # Layout: Assuming Landscape (e.g., 416x240)
 
-    # 1. Header (Timestamp)
-    draw.text(
-        (10, 5),
-        f"Air Quality - {datetime.now().strftime('%H:%M')}",
-        font=font_small,
-        fill=0,
-    )
-    draw.line((0, 30, width, 30), fill=0)
+    # 1. Header (Day, Hour:Minute)
+    current_time = datetime.now().strftime("%A, %H:%M")
+    draw.text((10, 5), f"Air Quality - {current_time}", font=font_small, fill=0)
+    draw.line((0, 30, width, 30), fill=0, width=2)
 
     # 2. Main AQI Display
-    aqi_val = data.get("aqi", 0)
-    category, _ = get_aqi_category(aqi_val)
+    aqi_val = data.get("aqi")
+
+    # Using your external utility to get the category string
+    category = data.get("aqi_cat")
+
     draw.text((10, 35), f"AQI: {aqi_val}", font=font_large, fill=0)
     draw.text((10, 85), f"{category}", font=font_medium, fill=0)
 
     # 3. Sensor Grid
-    # Left Column: PM Values
     y_grid = 130
+
+    # Left Column: PM Values
     draw.text(
         (10, y_grid), f"PM2.5: {data.get('pm25', 0):.1f} ug/m3", font=font_small, fill=0
     )
@@ -76,6 +73,8 @@ def create_display_image(width, height, data, font_path):
 
     # 4. Footer
     draw.line((0, height - 20, width, height - 20), fill=0)
-    draw.text((10, height - 18), "SPS30 | HTU21D | SCD41", font=font_tiny, fill=0)
+    draw.text(
+        (10, height - 18), "SPS30 (PM) | SCD41 (CO2, Temp, Hum)", font=font_tiny, fill=0
+    )
 
     return image
