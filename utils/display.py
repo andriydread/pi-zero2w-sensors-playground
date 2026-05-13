@@ -41,6 +41,7 @@ def create_display_image(width, height, data, font_path=None):
 
     # 3. Sensor Grid
     y_grid = 130
+    Y_2_grid = 35
 
     # Left Column: PM Values
     draw.text(
@@ -56,17 +57,41 @@ def create_display_image(width, height, data, font_path=None):
     # Right Column: Environment
     col2_x = 220
     draw.text(
+        (col2_x, Y_2_grid),
+        f"HTU:  {data.get('temp_htu', 0):.1f} C",
+        font=font_small,
+        fill=0,
+    )
+    draw.text(
+        (col2_x, Y_2_grid + 25),
+        f"HTU:  {data.get('humd_htu', 0):.1f} %",
+        font=font_small,
+        fill=0,
+    )
+    draw.text(
+        (col2_x, Y_2_grid + 50),
+        f"AHT:  {data.get('temp_aht', 0):.1f} C",
+        font=font_small,
+        fill=0,
+    )
+    draw.text(
+        (col2_x, Y_2_grid + 75),
+        f"AHT:  {data.get('humd_aht', 0):.1f} %",
+        font=font_small,
+        fill=0,
+    )
+    draw.text(
         (col2_x, y_grid), f"CO2:  {data.get('co2', 0):.0f} ppm", font=font_small, fill=0
     )
     draw.text(
         (col2_x, y_grid + 25),
-        f"Temp: {data.get('temp', 0):.1f} C",
+        f"Temp: {data.get('temp_scd', 0):.1f} C",
         font=font_small,
         fill=0,
     )
     draw.text(
         (col2_x, y_grid + 50),
-        f"Hum:  {data.get('hum', 0):.1f} %",
+        f"Hum:  {data.get('hum_scd', 0):.1f} %",
         font=font_small,
         fill=0,
     )

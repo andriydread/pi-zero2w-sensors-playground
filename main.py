@@ -1,36 +1,41 @@
 import time
 
+import adafruit_ahtx0
 import adafruit_scd4x
 import board
 import busio
+from adafruit_htu21d import HTU21D
 
-# Import your hardware classes
 from lib.sps30 import SPS30_UART
 from lib.uc8253c import UC8253C_SPI
 from utils.aqi import calculate_aqi, get_aqi_category
-
-# Import your drawing utility
 from utils.display import create_display_image
 
 
 def main():
-    print("Starting Air Station...")
+    print("Starting Air Station")
 
-    # 1. Init SCD41 (I2C)
+    # Init SCD41 (I2C)
     i2c = busio.I2C(board.SCL, board.SDA)
     scd4x = adafruit_scd4x.SCD4X(i2c)
     scd4x.start_periodic_measurement()
 
-    # 2. Init SPS30 (UART)
+    # Init SPS30 (UART)
     sps = SPS30_UART(port="/dev/serial0", baud_rate=115200)
     sps.start_measurement()
 
-    # 3. Init E-Paper Display (SPI)
+    # Init HTU21D (I2C)
+    htu = HTU21D(i2c)
+
+    # Init AHT10 (I2C)
+    aht = adafruit_ahtx0.AHTx0(i2c)
+
+    # Init E-Paper Display (SPI)
     # Using rotation=90 makes a 240x416 screen into 416x240 landscape
     epd = UC8253C_SPI(rotation=90)
     epd.clear()
 
-    print("Waiting 5 seconds for initial sensor readings...")
+    print("Waiting 5 seconds for initial sensor readings")
     time.sleep(5)
 
     update_counter = 0
@@ -38,16 +43,14 @@ def main():
 
     try:
         while True:
-            # The SCD41 updates every 5 seconds. We use it to pace our loop.
             if scd4x.data_ready:
-                # Fetch UART data from SPS30
-                sps_success, pm_data = sps.read_values()
-
                 # Read I2C data from SCD41
                 co2_val = scd4x.CO2
-                temp_val = scd4x.temperature
-                humd_val = scd4x.relative_humidity
+                scd_temp_val = scd4x.temperature
+                scd_humd_val = scd4x.relative_humidity
 
+                # Read UART data from SPS30
+                sps_success, pm_data = sps.read_values()
                 pm25_val = pm_data["pm2_5_mass"] if sps_success else 0.0
                 pm10_val = pm_data["pm10_0_mass"] if sps_success else 0.0
 
@@ -58,20 +61,31 @@ def main():
                     else "N/A"
                 )
 
+                # Read I2C data from HTU21D
+                htu_temp_val = htu.temperature
+                htu_humd_val = htu.relative_humidity
+
+                # Read I2C data from AHT10
+
+                aht_temp_val = aht.temperature
+                aht_humd_val = aht.relative_humidity
+
                 # Package data for the drawing utility
                 display_data = {
                     "aqi": aqi,
                     "aqi_cat": aqi_cat,
-                    "temp": temp_val,
-                    "hum": humd_val,
+                    "temp_scd": scd_temp_val,
+                    "humd_scd": scd_humd_val,
+                    "temp_htu": htu_temp_val,
+                    "humd_htu": htu_humd_val,
+                    "temp_aht": aht_temp_val,
+                    "humd_aht": aht_humd_val,
                     "co2": co2_val,
                     "pm25": pm25_val,
                     "pm10": pm10_val,
                 }
 
-                print(
-                    f"Updating Screen - Temp: {temp_val:.1f}C, CO2: {co2_val}ppm, PM2.5: {pm25_val:.1f}"
-                )
+                print("Updating Screen ")
 
                 # Create the image using your separated utility
                 img = create_display_image(
