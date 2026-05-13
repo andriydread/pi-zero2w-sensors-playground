@@ -91,7 +91,7 @@ def create_display_image(width, height, data, font_path=None):
     )
     draw.text(
         (col2_x, y_grid + 50),
-        f"Hum:  {data.get('hum_scd', 0):.1f} %",
+        f"Hum:  {data.get('humd_scd', 0):.1f} %",
         font=font_small,
         fill=0,
     )
