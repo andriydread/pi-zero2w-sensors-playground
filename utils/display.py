@@ -2,104 +2,100 @@ from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
-# Import your existing AQI utility
-
 
 def create_display_image(width, height, data, font_path=None):
     """
-    Creates a Pillow image for the e-paper display.
-    Expects data dict with: aqi, temp, hum, pm25, pm10, co2
+    Creates a Pillow image for the e-paper display with a structured layout:
+    - Top: Header with Time, Day, and Date
+    - Left: AQI, CO2, Temp, Humid
+    - Right: Three stacked boxes (PM2.5, PM10, Status)
     """
-    # 255 is White in 1-bit mode
+    # Create white background (1-bit mode)
     image = Image.new("1", (width, height), 255)
     draw = ImageDraw.Draw(image)
 
-    # Attempt to load fonts, fallback silently to default if it fails
+    # --- FONT LOADING ---
     try:
-        font_large = ImageFont.truetype(font_path, 48)
-        font_medium = ImageFont.truetype(font_path, 24)
-        font_small = ImageFont.truetype(font_path, 18)
-        font_tiny = ImageFont.truetype(font_path, 14)
+        font_lg = ImageFont.truetype(font_path, 50)  # For AQI
+        font_md = ImageFont.truetype(font_path, 28)  # For Main Stats
+        font_sm = ImageFont.truetype(font_path, 18)  # For Header/Labels
+        font_xs = ImageFont.truetype(font_path, 14)  # For Small box labels
     except Exception:
-        font_large = font_medium = font_small = font_tiny = ImageFont.load_default()
+        font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
-    # Layout: Assuming Landscape (e.g., 416x240)
+    # --- 1. HEADER ---
+    # Format: hh:mm - Day of week - dd/mm/yyyy
+    header_text = datetime.now().strftime("%H:%M - %A - %d/%m/%Y")
 
-    # 1. Header (Day, Hour:Minute)
-    current_time = datetime.now().strftime("%A, %H:%M")
-    draw.text((10, 5), f"Air Quality - {current_time}", font=font_small, fill=0)
-    draw.line((0, 30, width, 30), fill=0, width=2)
+    # Draw header centered
+    header_w = draw.textlength(header_text, font=font_sm)
+    draw.text(((width - header_w) // 2, 8), header_text, font=font_sm, fill=0)
 
-    # 2. Main AQI Display
-    aqi_val = data.get("aqi")
+    # Horizontal Line
+    header_h = 35
+    draw.line((0, header_h, width, header_h), fill=0, width=2)
 
-    # Using your external utility to get the category string
-    category = data.get("aqi_cat")
+    # --- 2. DIVIDERS ---
+    # Vertical line separating left (60%) and right (40%)
+    split_x = int(width * 0.6)
+    draw.line((split_x, header_h, split_x, height), fill=0, width=2)
 
-    draw.text((10, 35), f"AQI: {aqi_val}", font=font_large, fill=0)
-    draw.text((10, 85), f"{category}", font=font_medium, fill=0)
+    # --- 3. LEFT COLUMN (Main Stats) ---
+    left_padding = 15
+    y_cursor = header_h + 10
 
-    # 3. Sensor Grid
-    y_grid = 130
-    Y_2_grid = 35
+    # AQI and Category
+    aqi_val = int(data.get("aqi", 0))
+    category = data.get("aqi_cat", "N/A")
+    draw.text((left_padding, y_cursor), f"AQI: {aqi_val}", font=font_lg, fill=0)
+    y_cursor += 50
+    draw.text((left_padding, y_cursor), f"{category}", font=font_sm, fill=0)
 
-    # Left Column: PM Values
+    y_cursor += 35  # Space before list
+
+    # CO2, Temp, Humid (All as Integers)
     draw.text(
-        (10, y_grid), f"PM2.5: {data.get('pm25', 0):.1f} ug/m3", font=font_small, fill=0
+        (left_padding, y_cursor),
+        f"CO2: {(data.get('co2', 0))} ppm",
+        font=font_md,
+        fill=0,
     )
+    y_cursor += 35
     draw.text(
-        (10, y_grid + 25),
-        f"PM10:  {data.get('pm10', 0):.1f} ug/m3",
-        font=font_small,
+        (left_padding, y_cursor),
+        f"Temp: {int(data.get('temp', 0))}°C",
+        font=font_md,
+        fill=0,
+    )
+    y_cursor += 35
+    draw.text(
+        (left_padding, y_cursor),
+        f"Humid: {int(data.get('humid', 0))}%",
+        font=font_md,
         fill=0,
     )
 
-    # Right Column: Environment
-    col2_x = 220
-    draw.text(
-        (col2_x, Y_2_grid),
-        f"HTU:  {data.get('temp_htu', 0):.1f} C",
-        font=font_small,
-        fill=0,
-    )
-    draw.text(
-        (col2_x, Y_2_grid + 25),
-        f"HTU:  {data.get('humd_htu', 0):.1f} %",
-        font=font_small,
-        fill=0,
-    )
-    draw.text(
-        (col2_x, Y_2_grid + 50),
-        f"AHT:  {data.get('temp_aht', 0):.1f} C",
-        font=font_small,
-        fill=0,
-    )
-    draw.text(
-        (col2_x, Y_2_grid + 75),
-        f"AHT:  {data.get('humd_aht', 0):.1f} %",
-        font=font_small,
-        fill=0,
-    )
-    draw.text(
-        (col2_x, y_grid), f"CO2:  {data.get('co2', 0):.0f} ppm", font=font_small, fill=0
-    )
-    draw.text(
-        (col2_x, y_grid + 25),
-        f"Temp: {data.get('temp_scd', 0):.1f} C",
-        font=font_small,
-        fill=0,
-    )
-    draw.text(
-        (col2_x, y_grid + 50),
-        f"Hum:  {data.get('humd_scd', 0):.1f} %",
-        font=font_small,
-        fill=0,
-    )
+    # --- 4. RIGHT COLUMN (Three Boxes) ---
+    box_width = width - split_x
+    box_height = (height - header_h) // 3
+    right_x = split_x + 10
 
-    # 4. Footer
-    draw.line((0, height - 20, width, height - 20), fill=0)
-    draw.text(
-        (10, height - 18), "SPS30 (PM) | SCD41 (CO2, Temp, Hum)", font=font_tiny, fill=0
-    )
+    # Box 1: PM2.5 (Top)
+    b1_y = header_h
+    draw.text((right_x, b1_y + 5), "PM 2.5", font=font_xs, fill=0)
+    draw.text((right_x, b1_y + 20), f"{data.get('pm25', 0):.1f}", font=font_md, fill=0)
+    draw.line((split_x, b1_y + box_height, width, b1_y + box_height), fill=0, width=1)
+
+    # Box 2: PM10 (Mid)
+    b2_y = header_h + box_height
+    draw.text((right_x, b2_y + 5), "PM 10", font=font_xs, fill=0)
+    draw.text((right_x, b2_y + 20), f"{data.get('pm10', 0):.1f}", font=font_md, fill=0)
+    draw.line((split_x, b2_y + box_height, width, b2_y + box_height), fill=0, width=1)
+
+    # Box 3: Status/Info (Bottom)
+    b3_y = header_h + (box_height * 2)
+    draw.text((right_x, b3_y + 5), "SENSORS", font=font_xs, fill=0)
+    draw.text((right_x, b3_y + 22), "SCD41 OK", font=font_xs, fill=0)
+    draw.text((right_x, b3_y + 37), "SPS30 OK", font=font_xs, fill=0)
 
     return image
