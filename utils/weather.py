@@ -41,7 +41,6 @@ def get_weather_forecast(lat: float, lon: float) -> dict:
     """
     Fetches a 3-day weather forecast from Open-Meteo.
     """
-    # Changed forecast_days=1 to forecast_days=3
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
@@ -57,30 +56,29 @@ def get_weather_forecast(lat: float, lon: float) -> dict:
 
         weather_dict = {}
 
-        # We process Today (0), Tomorrow (1), and Day After (2)
         for i in range(3):
-            # Figure out the day's name
             if i == 0:
                 day_name = "TODAY"
             elif i == 1:
                 day_name = "TOMORROW"
             else:
-                # Convert date string "YYYY-MM-DD" to Day name (e.g. "WEDNESDAY")
                 date_str = daily.get("time", ["", "", ""])[i]
                 if date_str:
                     dt = datetime.strptime(date_str, "%Y-%m-%d")
-                    day_name = dt.strftime("%A")  # Full weekday name
+                    day_name = dt.strftime("%A")
                 else:
                     day_name = "DAY 3"
 
-            # Safely grab data for index 'i'
             wmo_code = daily.get("weathercode", [0] * 3)[i]
             t_max = daily.get("temperature_2m_max", [0] * 3)[i]
             t_min = daily.get("temperature_2m_min", [0] * 3)[i]
             precip = daily.get("precipitation_probability_max", [0] * 3)[i]
 
-            # Store in dict
+            # --- THE FIX IS HERE ---
             weather_dict[f"day{i}_name"] = day_name
+            weather_dict[f"day{i}_code"] = (
+                wmo_code  # <-- Explicitly sending the code number to main.py
+            )
             weather_dict[f"day{i}_cond"] = WMO_CODES.get(wmo_code, "Unknown")
             weather_dict[f"day{i}_max"] = round(t_max, 1)
             weather_dict[f"day{i}_min"] = round(t_min, 1)
