@@ -13,11 +13,17 @@ from lib.sps30 import SPS30_UART
 from lib.uc8253c import UC8253C_SPI
 from utils.aqi import calculate_aqi, get_aqi_category
 from utils.display import create_display_image
+from utils.weather import get_weather_forecast
 
 # --- CONFIGURATION ---
 API_UPDATE_INTERVAL = 60  # 1 Minute
 DISPLAY_UPDATE_INTERVAL = 300  # 5 Minutes
+WEATHER_UPDATE_INTERVAL = 3600  # 1 Hour (New)
 FONT_PATH = "fonts/dejavu-sans-bold.ttf"
+
+# Weather Setup (Replace with your exact coordinates)
+WEATHER_LAT = 49.842957
+WEATHER_LON = 24.031111
 
 # API Setup
 ENABLE_API_UPLOAD = False
@@ -42,6 +48,10 @@ class AirQualityStation:
         # Timing
         self.last_api_update = time.monotonic()
         self.last_display_update = time.monotonic()
+        self.last_weather_update = 0  # Set to 0 to force update on first boot
+
+        # Latest Weather Data Cache
+        self.current_weather = {}
 
         # Data Buckets
         # 5sec readings
@@ -143,17 +153,25 @@ class AirQualityStation:
         except Exception as e:
             logger.warning(f"API Upload Failed: {e}")
 
+    def process_weather_update(self):
+        """Fetches and caches weather data from open-meteo."""
+        logger.info("Fetching latest weather forecast...")
+        new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON)
+        if new_weather:
+            self.current_weather = new_weather
+
     def process_display_update(self):
         """Averages the API bucket (5 samples of 1-min averages) and updates screen."""
         final_data = {}
         for key in self.api_averages:
             final_data[key] = self._calculate_average(self.api_averages[key])
-            # Clear the API bucket for the next 5 minutes
             self.api_averages[key] = []
 
-        # Final AQI calculation for display
         final_data["aqi"] = calculate_aqi(final_data["pm25"], final_data["pm10"])
         final_data["aqi_cat"] = get_aqi_category(final_data["aqi"])
+
+        # Inject cached weather data into final_data for display.py
+        final_data.update(self.current_weather)
 
         logger.info("Refreshing E-Paper Display with 5-minute averaged data.")
 
@@ -172,17 +190,24 @@ class AirQualityStation:
 
         try:
             while True:
-                # 1. Always try to collect raw samples (every ~5s)
+                # 1. Collect raw samples (every ~5s)
                 self.collect_raw_sample()
 
                 now = time.monotonic()
 
-                # 2. API Update (Every 60s)
+                # 2. Weather Update (Every 60 minutes)
+                if (
+                    now - self.last_weather_update
+                ) >= WEATHER_UPDATE_INTERVAL or self.last_weather_update == 0:
+                    self.process_weather_update()
+                    self.last_weather_update = now
+
+                # 3. API Update (Every 60s)
                 if (now - self.last_api_update) >= API_UPDATE_INTERVAL:
                     self.process_api_update()
                     self.last_api_update = now
 
-                # 3. Screen Update (Every 300s)
+                # 4. Screen Update (Every 300s)
                 if (now - self.last_display_update) >= DISPLAY_UPDATE_INTERVAL:
                     self.process_display_update()
                     self.last_display_update = now

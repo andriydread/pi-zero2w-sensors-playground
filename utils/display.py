@@ -5,12 +5,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 def create_display_image(width, height, data, font_path=None):
     """
-    Creates a Pillow image for the e-paper display with a structured layout:
+    Creates a Pillow image for the e-paper display:
     - Top: Header with Time, Day, and Date
-    - Left: AQI, CO2, Temp, Humid
-    - Right: Three stacked boxes (PM2.5, PM10, Status)
+    - Left (60%): AQI, CO2, Temp, Humid
+    - Right (40%): 3-Day Weather Forecast (Today, Tomorrow, Day 3)
     """
-    # Create white background (1-bit mode)
     image = Image.new("1", (width, height), 255)
     draw = ImageDraw.Draw(image)
 
@@ -19,24 +18,19 @@ def create_display_image(width, height, data, font_path=None):
         font_lg = ImageFont.truetype(font_path, 50)  # For AQI
         font_md = ImageFont.truetype(font_path, 28)  # For Main Stats
         font_sm = ImageFont.truetype(font_path, 18)  # For Header/Labels
-        font_xs = ImageFont.truetype(font_path, 14)  # For Small box labels
+        font_xs = ImageFont.truetype(font_path, 14)  # For Small box labels & weather
     except Exception:
         font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
     # --- 1. HEADER ---
-    # Format: hh:mm - Day of week - dd/mm/yyyy
     header_text = datetime.now().strftime("%H:%M - %A - %d/%m/%Y")
-
-    # Draw header centered
     header_w = draw.textlength(header_text, font=font_sm)
     draw.text(((width - header_w) // 2, 8), header_text, font=font_sm, fill=0)
 
-    # Horizontal Line
     header_h = 35
     draw.line((0, header_h, width, header_h), fill=0, width=2)
 
     # --- 2. DIVIDERS ---
-    # Vertical line separating left (60%) and right (40%)
     split_x = int(width * 0.6)
     draw.line((split_x, header_h, split_x, height), fill=0, width=2)
 
@@ -51,23 +45,25 @@ def create_display_image(width, height, data, font_path=None):
     y_cursor += 50
     draw.text((left_padding, y_cursor), f"{category}", font=font_sm, fill=0)
 
-    y_cursor += 35  # Space before list
+    y_cursor += 35
 
-    # CO2, Temp, Humid (All as Integers)
+    # CO2, Temp, Humid
     draw.text(
         (left_padding, y_cursor),
-        f"CO2: {(data.get('co2', 0))} ppm",
+        f"CO2: {int(data.get('co2', 0))} ppm",
         font=font_md,
         fill=0,
     )
     y_cursor += 35
+
     draw.text(
         (left_padding, y_cursor),
-        f"Temp: {int(data.get('temp', 0))}°C",
+        f"Temp: {data.get('temp', 0):.1f}°C",
         font=font_md,
         fill=0,
     )
     y_cursor += 35
+
     draw.text(
         (left_padding, y_cursor),
         f"Humid: {int(data.get('humid', 0))}%",
@@ -75,27 +71,37 @@ def create_display_image(width, height, data, font_path=None):
         fill=0,
     )
 
-    # --- 4. RIGHT COLUMN (Three Boxes) ---
-    box_width = width - split_x
+    # --- 4. RIGHT COLUMN (3-Day Weather Forecast) ---
     box_height = (height - header_h) // 3
     right_x = split_x + 10
 
-    # Box 1: PM2.5 (Top)
-    b1_y = header_h
-    draw.text((right_x, b1_y + 5), "PM 2.5", font=font_xs, fill=0)
-    draw.text((right_x, b1_y + 20), f"{data.get('pm25', 0):.1f}", font=font_md, fill=0)
-    draw.line((split_x, b1_y + box_height, width, b1_y + box_height), fill=0, width=1)
+    # We loop 3 times to create Today, Tomorrow, and Day 3 boxes
+    for i in range(3):
+        box_y = header_h + (box_height * i)
 
-    # Box 2: PM10 (Mid)
-    b2_y = header_h + box_height
-    draw.text((right_x, b2_y + 5), "PM 10", font=font_xs, fill=0)
-    draw.text((right_x, b2_y + 20), f"{data.get('pm10', 0):.1f}", font=font_md, fill=0)
-    draw.line((split_x, b2_y + box_height, width, b2_y + box_height), fill=0, width=1)
+        # Get data from dictionary (populated by weather.py)
+        day_name = data.get(f"day{i}_name", f"DAY {i + 1}")
+        cond = data.get(f"day{i}_cond", "--")
+        t_max = data.get(f"day{i}_max", "--")
+        t_min = data.get(f"day{i}_min", "--")
+        precip = data.get(f"day{i}_precip", "--")
 
-    # Box 3: Status/Info (Bottom)
-    b3_y = header_h + (box_height * 2)
-    draw.text((right_x, b3_y + 5), "SENSORS", font=font_xs, fill=0)
-    draw.text((right_x, b3_y + 22), "SCD41 OK", font=font_xs, fill=0)
-    draw.text((right_x, b3_y + 37), "SPS30 OK", font=font_xs, fill=0)
+        # Truncate weather condition if it's too long
+        if len(cond) > 16:
+            cond = cond[:14] + ".."
+
+        # Draw Box Content
+        draw.text((right_x, box_y + 5), day_name.upper(), font=font_xs, fill=0)
+        draw.text((right_x, box_y + 22), f"{cond}", font=font_xs, fill=0)
+        draw.text((right_x, box_y + 37), f"{t_max}° / {t_min}°", font=font_xs, fill=0)
+        draw.text((right_x, box_y + 52), f"Rain: {precip}%", font=font_xs, fill=0)
+
+        # Draw dividing lines between boxes (skip for the last box)
+        if i < 2:
+            draw.line(
+                (split_x, box_y + box_height, width, box_y + box_height),
+                fill=0,
+                width=1,
+            )
 
     return image
