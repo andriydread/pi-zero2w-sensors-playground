@@ -99,49 +99,43 @@ class TestAirQualityStation:
         """Reads sensors and prints exactly what was read."""
         reads = []
 
-        # 1. SCD41 (CO2)
         try:
             if self.scd4x.data_ready:
-                val = self.scd4x.CO2
-                self.raw_data["co2"].append(val)
-                reads.append(f"CO2: {val}")
-        except Exception:
-            reads.append("CO2: ERR")
+                # 1. SCD41 (CO2)
+                try:
+                    val = self.scd4x.CO2
+                    self.raw_data["co2"].append(val)
+                    reads.append(f"CO2: {val}")
+                except Exception:
+                    reads.append("CO2: ERR")
 
-        # 2. HTU21D (Temp & Humid)
-        try:
-            t = self.htu.temperature
-            h = self.htu.relative_humidity
-            self.raw_data["temp"].append(t)
-            self.raw_data["humid"].append(h)
-            reads.append(f"T: {t:.1f}C H: {h:.1f}%")
-        except Exception:
-            reads.append("HTU: ERR")
+                # 2. HTU21D (Temp & Humid)
+                try:
+                    t = self.htu.temperature
+                    h = self.htu.relative_humidity
+                    self.raw_data["temp"].append(t)
+                    self.raw_data["humid"].append(h)
+                    reads.append(f"T: {t:.1f}C H: {h:.1f}%")
+                except Exception:
+                    reads.append("HTU: ERR")
 
-        # 3. SPS30 (PM2.5 & PM10)
-        try:
-            success, pm = self.sps.read_values()
-            if success:
-                p25 = pm["pm2_5_mass"]
-                p10 = pm["pm10_0_mass"]
-                self.raw_data["pm25"].append(p25)
-                self.raw_data["pm10"].append(p10)
-                reads.append(f"PM2.5: {p25:.1f} PM10: {p10:.1f}")
-        except Exception:
-            reads.append("SPS: ERR")
+                # 3. SPS30 (PM2.5 & PM10)
+                try:
+                    success, pm = self.sps.read_values()
+                    if success:
+                        p25 = pm["pm2_5_mass"]
+                        p10 = pm["pm10_0_mass"]
+                        self.raw_data["pm25"].append(p25)
+                        self.raw_data["pm10"].append(p10)
+                        reads.append(f"PM2.5: {p25:.1f} PM10: {p10:.1f}")
+                except Exception:
+                    reads.append("SPS: ERR")
+
+        except Exception as e:
+            print(f"!!! COLLECTIN RAW SAMPLES FAILED: {e} !!!\n")
 
         # Print the reading on one line
         print("[RAW READ]  " + " | ".join(reads))
-
-    def _recover_scd41(self):
-        print("\n!!! TRIGGERING SCD41 RECOVERY !!!")
-        try:
-            self.scd4x.stop_periodic_measurement()
-            time.sleep(0.5)
-            self.scd4x.start_periodic_measurement()
-            print("!!! RECOVERY COMMAND SENT !!!\n")
-        except Exception as e:
-            print(f"!!! RECOVERY FAILED: {e} !!!\n")
 
     def process_api_update(self):
         print("\n" + "-" * 50)
@@ -241,7 +235,7 @@ class TestAirQualityStation:
                     self.process_display_update()
                     self.last_display_update = now
 
-                time.sleep(1)
+                time.sleep(5)
 
         except KeyboardInterrupt:
             print("\n>>> MANUAL STOP DETECTED. SHUTTING DOWN... <<<")
