@@ -15,10 +15,14 @@ Dependencies:
     pip install spidev RPi.GPIO Pillow
 """
 
+import logging
 import time
 
 import RPi.GPIO as GPIO
 import spidev
+
+# Grab the logger inherited from main.py's configuration
+logger = logging.getLogger("AirStation.UC8253C")
 
 
 class UC8253C_SPI:
@@ -60,6 +64,9 @@ class UC8253C_SPI:
         self.busy_pin = busy_pin
         self.rotation = rotation
 
+        # Pre-declare SPI so close() safely ignores it if setup fails
+        self.spi = None
+
         # State tracking
         self.is_sleeping = True
         self.current_mode = self.MODE_FULL
@@ -79,7 +86,7 @@ class UC8253C_SPI:
             self._init_gpio()
             self._init_spi(spi_bus, spi_device)
         except Exception as e:
-            self._print_error(f"Hardware initialization failed: {e}")
+            logger.error(f"Hardware initialization failed: {e}")
             self.close()
 
     def __enter__(self):
@@ -88,10 +95,6 @@ class UC8253C_SPI:
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Always put the screen to sleep on exit to prevent hardware damage
         self.close()
-
-    def _print_error(self, e):
-        """Centralized error printing using the exact requested template."""
-        print(f"[UC8253C] Error within library - {e}")
 
     # --- Low-Level SPI & GPIO ---
 
@@ -128,7 +131,7 @@ class UC8253C_SPI:
                     # writebytes2 is specifically optimized for large bytearrays
                     self.spi.writebytes2(data)
         except Exception as e:
-            self._print_error(f"SPI write failed: {e}")
+            logger.error(f"SPI write failed: {e}")
 
     def _wait_busy(self, timeout_secs=5):
         """
@@ -142,10 +145,10 @@ class UC8253C_SPI:
             while GPIO.input(self.busy_pin) == 0:
                 time.sleep(0.01)
                 if (time.time() - start) > timeout_secs:
-                    self._print_error("Hardware busy timeout! Screen might be stuck.")
+                    logger.error("Hardware busy timeout! Screen might be stuck.")
                     return False
         except Exception as e:
-            self._print_error(f"Failed to read busy pin: {e}")
+            logger.error(f"Failed to read busy pin: {e}")
             return False
 
         time.sleep(0.02)
@@ -161,7 +164,7 @@ class UC8253C_SPI:
             self._is_swapped = False
             self.is_sleeping = False
         except Exception as e:
-            self._print_error(f"Hardware reset failed: {e}")
+            logger.error(f"Hardware reset failed: {e}")
 
     def _wake_up(self):
         """Wakes the display from Deep Sleep and re-initializes registers."""
@@ -244,7 +247,6 @@ class UC8253C_SPI:
         # Put the hardware back into whatever mode the user requested
         self._apply_current_mode()
 
-        # --- NEW: Auto sleep feature ---
         if auto_sleep:
             self.sleep()
 
@@ -254,7 +256,7 @@ class UC8253C_SPI:
         to the screen using differential updates.
         """
         if image.width != self.width or image.height != self.height:
-            self._print_error(
+            logger.error(
                 f"Image dimension mismatch. Expected {self.width}x{self.height}, got {image.width}x{image.height}"
             )
             return False
@@ -269,7 +271,7 @@ class UC8253C_SPI:
                 image = image.rotate(self.rotation, expand=True)
             current_buffer = bytearray(image.convert("1").tobytes())
         except Exception as e:
-            self._print_error(f"Failed to process image data: {e}")
+            logger.error(f"Failed to process image data: {e}")
             return False
 
         if self._is_swapped:
@@ -287,7 +289,6 @@ class UC8253C_SPI:
         self.buffer_old = current_buffer
         self._is_swapped = not self._is_swapped
 
-        # --- NEW: Auto sleep feature ---
         if auto_sleep:
             self.sleep()
 
@@ -299,7 +300,7 @@ class UC8253C_SPI:
         IMPORTANT: Always call this after updates! Keeping voltage applied to
         an e-paper panel for long periods will permanently damage the screen.
         """
-        if self.is_sleeping:
+        if getattr(self, "is_sleeping", True):
             return
 
         try:
@@ -310,18 +311,27 @@ class UC8253C_SPI:
             )  # 0xA5 is the specific byte to enter sleep
             self.is_sleeping = True
         except Exception as e:
-            self._print_error(f"Failed to put display to sleep: {e}")
+            logger.error(f"Failed to put display to sleep: {e}")
 
     def close(self):
         """Safely shuts down the SPI bus and releases GPIO pins."""
+        # 1. Attempt to sleep the panel to prevent hardware damage
         try:
-            self.sleep()
-        except:
-            pass
-
-        try:
-            if hasattr(self, "spi"):
-                self.spi.close()
-            GPIO.cleanup([self.rst_pin, self.dc_pin, self.busy_pin])
+            if hasattr(self, "is_sleeping") and not self.is_sleeping:
+                self.sleep()
         except Exception as e:
-            self._print_error(f"Error during cleanup: {e}")
+            logger.error(f"Error putting display to sleep during close: {e}")
+
+        # 2. Close SPI connection safely
+        try:
+            if getattr(self, "spi", None) is not None:
+                self.spi.close()
+        except Exception as e:
+            logger.error(f"Error closing SPI during cleanup: {e}")
+
+        # 3. Clean up GPIO pins if they were initialized
+        try:
+            if all(hasattr(self, attr) for attr in ["rst_pin", "dc_pin", "busy_pin"]):
+                GPIO.cleanup([self.rst_pin, self.dc_pin, self.busy_pin])
+        except Exception as e:
+            logger.error(f"Error during GPIO cleanup: {e}")

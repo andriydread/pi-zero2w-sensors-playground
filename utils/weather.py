@@ -76,9 +76,7 @@ def get_weather_forecast(lat: float, lon: float) -> dict:
 
             # --- THE FIX IS HERE ---
             weather_dict[f"day{i}_name"] = day_name
-            weather_dict[f"day{i}_code"] = (
-                wmo_code  # <-- Explicitly sending the code number to main.py
-            )
+            weather_dict[f"day{i}_code"] = wmo_code
             weather_dict[f"day{i}_cond"] = WMO_CODES.get(wmo_code, "Unknown")
             weather_dict[f"day{i}_max"] = round(t_max, 1)
             weather_dict[f"day{i}_min"] = round(t_min, 1)

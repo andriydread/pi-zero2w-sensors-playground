@@ -97,7 +97,6 @@ class TestAirQualityStation:
 
     def collect_raw_sample(self):
         """Reads sensors and prints exactly what was read."""
-        reads = []
 
         try:
             if self.scd4x.data_ready:
@@ -105,9 +104,8 @@ class TestAirQualityStation:
                 try:
                     val = self.scd4x.CO2
                     self.raw_data["co2"].append(val)
-                    reads.append(f"CO2: {val}")
                 except Exception:
-                    reads.append("CO2: ERR")
+                    pass
 
                 # 2. HTU21D (Temp & Humid)
                 try:
@@ -115,9 +113,8 @@ class TestAirQualityStation:
                     h = self.htu.relative_humidity
                     self.raw_data["temp"].append(t)
                     self.raw_data["humid"].append(h)
-                    reads.append(f"T: {t:.1f}C H: {h:.1f}%")
                 except Exception:
-                    reads.append("HTU: ERR")
+                    pass
 
                 # 3. SPS30 (PM2.5 & PM10)
                 try:
@@ -127,15 +124,13 @@ class TestAirQualityStation:
                         p10 = pm["pm10_0_mass"]
                         self.raw_data["pm25"].append(p25)
                         self.raw_data["pm10"].append(p10)
-                        reads.append(f"PM2.5: {p25:.1f} PM10: {p10:.1f}")
                 except Exception:
-                    reads.append("SPS: ERR")
+                    pass
 
         except Exception as e:
             print(f"!!! COLLECTIN RAW SAMPLES FAILED: {e} !!!\n")
 
         # Print the reading on one line
-        print("[RAW READ]  " + " | ".join(reads))
 
     def process_api_update(self):
         print("\n" + "-" * 50)

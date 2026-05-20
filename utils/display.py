@@ -116,7 +116,7 @@ def create_display_image(width, height, data, font_path=None):
     draw.line((col_w, Y_LINE_3, col_w, height), fill=0, width=1)
     draw.line((col_w * 2, Y_LINE_3, col_w * 2, height), fill=0, width=1)
 
-    icon_size = 70  # Slightly smaller than 75 to avoid overlapping text
+    icon_size = 70
 
     for i in range(3):
         col_start, col_end = i * col_w, (i + 1) * col_w
