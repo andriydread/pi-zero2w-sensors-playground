@@ -7,10 +7,14 @@ Dependencies:
     pip install pyserial
 """
 
+import logging
 import struct
 import time
 
 import serial
+
+# Grab the logger inherited from main.py's configuration
+logger = logging.getLogger("AirStation.SPS30")
 
 
 class SPS30_UART:
@@ -37,17 +41,13 @@ class SPS30_UART:
         # Ensures we don't leave the serial port hanging open
         self.close()
 
-    def _print_error(self, e):
-        """Centralized error printing using the exact requested template."""
-        print(f"[SPS30] Error within library - {e}")
-
     def close(self):
         """Safely closes the serial port connection."""
         if self.ser and self.ser.is_open:
             try:
                 self.ser.close()
             except Exception as e:
-                self._print_error(f"Failed to close serial port: {e}")
+                logger.error(f"Failed to close serial port: {e}")
 
     def _connect(self):
         """
@@ -67,7 +67,7 @@ class SPS30_UART:
             )
             return True
         except serial.SerialException as e:
-            self._print_error(f"Failed to connect on {self.port}: {e}")
+            logger.error(f"Failed to connect on {self.port}: {e}")
             return False
 
     # --- SHDLC Protocol Helpers ---
@@ -118,14 +118,20 @@ class SPS30_UART:
         if not self.ser or not self.ser.is_open:
             if not self._connect():
                 err = "Serial port is not open and failed to reconnect."
-                self._print_error(err)
+                logger.error(err)
                 return False, err
 
         try:
-            # Clear old garbage data in the buffers before sending a new command
+            # Clear old garbage data in the buffers safely
+            # If the UART disconnected, this will throw an exception
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
+        except Exception as e:
+            logger.error(f"Failed to clear serial buffers: {e}")
+            self._connect()  # Try to revive the connection
+            return False, str(e)
 
+        try:
             # Frame structure: [Address(0x00), Command, Data Length, Data...]
             frame_content = [0x00, cmd_id, len(data)] + data
             chk = self._calc_checksum(frame_content)
@@ -138,7 +144,7 @@ class SPS30_UART:
             return True, "OK"
 
         except serial.SerialException as e:
-            self._print_error(f"Serial write error: {e}")
+            logger.error(f"Serial write error: {e}")
             self._connect()  # Try to recover the connection for the next call
             return False, str(e)
 
@@ -146,7 +152,7 @@ class SPS30_UART:
         """Reads a response frame from UART, validates the checksum, and extracts data."""
         if not self.ser or not self.ser.is_open:
             err = "Serial port is not open."
-            self._print_error(err)
+            logger.error(err)
             return False, err
 
         try:
@@ -154,14 +160,14 @@ class SPS30_UART:
             start_flag = self.ser.read_until(b"\x7e")
             if not start_flag:
                 err = "Timeout waiting for response start flag."
-                self._print_error(err)
+                logger.error(err)
                 return False, err
 
             # Read everything up to the ending flag
             payload_raw = self.ser.read_until(b"\x7e")
             if not payload_raw.endswith(b"\x7e"):
                 err = "Incomplete frame received."
-                self._print_error(err)
+                logger.error(err)
                 return False, err
 
             # Strip the ending flag and unstuff the data
@@ -169,13 +175,13 @@ class SPS30_UART:
 
             if len(payload) < 5:
                 err = "Frame too short to be valid."
-                self._print_error(err)
+                logger.error(err)
                 return False, err
 
             # Verify checksum
             if self._calc_checksum(payload[:-1]) != payload[-1]:
                 err = "Checksum mismatch."
-                self._print_error(err)
+                logger.error(err)
                 return False, err
 
             # Check the status byte for sensor-level errors
@@ -192,7 +198,7 @@ class SPS30_UART:
                 err_msg = error_map.get(
                     status_byte, f"Unknown error code {status_byte}"
                 )
-                self._print_error(f"Sensor returned error state: {err_msg}")
+                logger.error(f"Sensor returned error state: {err_msg}")
                 return False, err_msg
 
             # Extract the actual data payload
@@ -201,11 +207,11 @@ class SPS30_UART:
             return True, data
 
         except serial.SerialException as e:
-            self._print_error(f"Serial read error: {e}")
+            logger.error(f"Serial read error: {e}")
             self._connect()
             return False, str(e)
         except Exception as e:
-            self._print_error(f"Unexpected error during read: {e}")
+            logger.error(f"Unexpected error during read: {e}")
             return False, str(e)
 
     def _execute_command(self, cmd_id, data=None, retries=3):
@@ -226,7 +232,7 @@ class SPS30_UART:
                 return True, res
 
             last_err = res
-            self._print_error(
+            logger.warning(
                 f"Command {hex(cmd_id)} failed on attempt {attempt + 1}/{retries}: {res}"
             )
             time.sleep(0.2)
@@ -289,11 +295,11 @@ class SPS30_UART:
                     }
                     return True, data_dict
                 except struct.error as e:
-                    self._print_error(f"Failed to decode float data: {e}")
+                    logger.error(f"Failed to decode float data: {e}")
                     return False, str(e)
             else:
                 err = f"Invalid data length: Expected 40 bytes, got {len(res)}"
-                self._print_error(err)
+                logger.error(err)
                 return False, err
 
         return False, res
@@ -308,7 +314,7 @@ class SPS30_UART:
     def set_auto_cleaning_interval(self, seconds):
         """Sets the automatic fan cleaning interval in seconds (default is usually 604800s / 1 week)."""
         if not isinstance(seconds, int) or seconds < 0 or seconds > 0xFFFFFFFF:
-            self._print_error("Cleaning interval must be a positive 32-bit integer.")
+            logger.error("Cleaning interval must be a positive 32-bit integer.")
             return False
 
         data = list(struct.pack(">I", seconds))
@@ -340,9 +346,7 @@ class SPS30_UART:
 
             # If any error flags are triggered, print an error warning
             if any([flags["fan_error"], flags["laser_error"], flags["internal_error"]]):
-                self._print_error(
-                    f"Hardware error detected in status register: {flags}"
-                )
+                logger.error(f"Hardware error detected in status register: {flags}")
 
             return True, flags
         return False, res
@@ -350,7 +354,7 @@ class SPS30_UART:
     def start_fan_cleaning(self):
         """Manually triggers a fan cleaning cycle. Sensor must be measuring to do this."""
         if not self.is_measuring:
-            self._print_error("Cannot clean fan. Sensor must be in measurement mode.")
+            logger.error("Cannot clean fan. Sensor must be in measurement mode.")
             return False
 
         success, _ = self._execute_command(0x56)
@@ -371,7 +375,7 @@ class SPS30_UART:
         0x01: Product Name, 0x02: Article Code, 0x03: Serial Number
         """
         if info_type not in [0x01, 0x02, 0x03]:
-            self._print_error(f"Invalid device info type requested: {info_type}")
+            logger.error(f"Invalid device info type requested: {info_type}")
             return False, "INVALID_INFO_TYPE"
 
         success, res = self._execute_command(0xD0, [info_type])
@@ -380,7 +384,7 @@ class SPS30_UART:
                 # Decode ASCII and strip the null terminator
                 return True, res.decode("ascii").rstrip("\x00")
             except Exception as e:
-                self._print_error(f"Failed to decode ASCII string: {e}")
+                logger.error(f"Failed to decode ASCII string: {e}")
                 return False, str(e)
 
         return False, res
