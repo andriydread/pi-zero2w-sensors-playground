@@ -67,47 +67,58 @@ class TestAirQualityStation:
         }
 
     def setup_hardware(self):
-        print("\n" + "=" * 50)
-        print(">>> INITIALIZING HARDWARE <<<")
-        print("=" * 50)
+        logger.info("=" * 50)
+        logger.info(">>> INITIALIZING HARDWARE <<<")
+        logger.info("=" * 50)
         try:
             self.i2c = busio.I2C(board.SCL, board.SDA)
 
-            print(" -> Starting SCD41 (CO2)...")
+            logger.info(" -> Starting SCD41 (CO2)...")
             self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
             self.scd4x.start_periodic_measurement()
 
-            print(" -> Starting HTU21D (Temp/Humid)...")
+            logger.info(" -> Starting HTU21D (Temp/Humid)...")
             self.htu = HTU21D(self.i2c)
 
-            print(" -> Starting SPS30 (PM)...")
+            logger.info(" -> Starting SPS30 (PM)...")
             self.sps = SPS30_UART(port="/dev/serial0", baud_rate=115200)
             self.sps.start_measurement()
 
-            print(" -> Starting E-Paper Display...")
+            logger.info(" -> Starting E-Paper Display...")
             self.epd = UC8253C_SPI(rotation=90)
             self.epd.clear()
 
-            print("[SUCCESS] All hardware initialized!\n")
+            logger.info("[SUCCESS] All hardware initialized!\n")
             return True
 
         except Exception as e:
-            print(f"[ERROR] Setup Failed: {e}\n")
+            logger.error(f"[ERROR] Setup Failed: {e}\n")
             return False
+
+    def _recover_scd41(self):
+        logger.info("Attempting SCD41 Auto-Recovery...")
+        try:
+            if self.scd4x:
+                self.scd4x.stop_periodic_measurement()
+                time.sleep(0.5)
+                self.scd4x.start_periodic_measurement()
+                logger.info("SCD41 Restart Command Sent.")
+        except Exception as e:
+            logger.warning(f"SCD41 Recovery Failed: {e}")
 
     def collect_raw_sample(self):
         """Reads sensors and prints exactly what was read."""
-
         try:
-            if self.scd4x.data_ready:
-                # 1. SCD41 (CO2)
+            # 1. SCD41 (CO2)
+            if self.scd4x and self.scd4x.data_ready:
                 try:
                     val = self.scd4x.CO2
                     self.raw_data["co2"].append(val)
                 except Exception:
                     pass
 
-                # 2. HTU21D (Temp & Humid)
+            # 2. HTU21D (Temp & Humid)
+            if self.htu:
                 try:
                     t = self.htu.temperature
                     h = self.htu.relative_humidity
@@ -116,7 +127,8 @@ class TestAirQualityStation:
                 except Exception:
                     pass
 
-                # 3. SPS30 (PM2.5 & PM10)
+            # 3. SPS30 (PM2.5 & PM10)
+            if self.sps:
                 try:
                     success, pm = self.sps.read_values()
                     if success:
@@ -128,13 +140,18 @@ class TestAirQualityStation:
                     pass
 
         except Exception as e:
-            print(f"!!! COLLECTIN RAW SAMPLES FAILED: {e} !!!\n")
+            logger.error(f"!!! COLLECTING RAW SAMPLES FAILED: {e} !!!")
 
-        # Print the reading on one line
+        # Print the reading on one line for quick visual confirmation
+        c_val = self.raw_data["co2"][-1] if self.raw_data["co2"] else "--"
+        t_val = round(self.raw_data["temp"][-1], 1) if self.raw_data["temp"] else "--"
+        p_val = round(self.raw_data["pm25"][-1], 1) if self.raw_data["pm25"] else "--"
+
+        logger.info(f"[RAW READ] CO2: {c_val} | Temp: {t_val}°C | PM2.5: {p_val}")
 
     def process_api_update(self):
-        print("\n" + "-" * 50)
-        print(">>> CALCULATING SHORT-TERM AVERAGES (API TICK) <<<")
+        logger.info("-" * 50)
+        logger.info(">>> CALCULATING SHORT-TERM AVERAGES (API TICK) <<<")
         avg_payload = {}
 
         for key in self.raw_data:
@@ -142,8 +159,8 @@ class TestAirQualityStation:
                 val = sum(self.raw_data[key]) / len(self.raw_data[key])
                 self.latest_data[key] = round(val, 2)
             else:
-                print(
-                    f"[WARNING] No raw data for {key.upper()}! Using cached value: {self.latest_data[key]}"
+                logger.warning(
+                    f"No raw data for {key.upper()}! Using cached value: {self.latest_data[key]}"
                 )
                 if key == "co2":
                     self._recover_scd41()
@@ -155,21 +172,21 @@ class TestAirQualityStation:
         avg_payload["aqi"] = calculate_aqi(avg_payload["pm25"], avg_payload["pm10"])
         avg_payload["aqi_cat"] = get_aqi_category(avg_payload["aqi"])
 
-        print(f"-> AVERAGED DATA: {avg_payload}")
-        print("-" * 50 + "\n")
+        logger.info(f"-> AVERAGED DATA: {avg_payload}")
+        logger.info("-" * 50)
 
     def process_weather_update(self):
-        print("\n>>> FETCHING WEATHER FROM OPEN-METEO <<<")
+        logger.info(">>> FETCHING WEATHER FROM OPEN-METEO <<<")
         new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON)
         if new_weather:
             self.current_weather = new_weather
-            print("-> WEATHER FETCH SUCCESS!\n")
+            logger.info("-> WEATHER FETCH SUCCESS!")
         else:
-            print("-> WEATHER FETCH FAILED!\n")
+            logger.warning("-> WEATHER FETCH FAILED!")
 
     def process_display_update(self):
-        print("\n" + "#" * 50)
-        print(">>> UPDATING E-PAPER DISPLAY <<<")
+        logger.info("#" * 50)
+        logger.info(">>> UPDATING E-PAPER DISPLAY <<<")
 
         final_data = {}
         for key in self.api_averages:
@@ -185,29 +202,31 @@ class TestAirQualityStation:
         final_data["aqi_cat"] = get_aqi_category(final_data["aqi"])
         final_data.update(self.current_weather)
 
-        print(f"-> FINAL SCREEN DATA payload: {final_data}")
+        logger.info(f"-> FINAL SCREEN DATA payload: {final_data}")
 
-        try:
-            print("-> Generating Image Layout...")
-            img = create_display_image(
-                self.epd.width, self.epd.height, final_data, FONT_PATH
-            )
+        if self.epd:
+            try:
+                logger.info("-> Generating Image Layout...")
+                img = create_display_image(
+                    self.epd.width, self.epd.height, final_data, FONT_PATH
+                )
 
-            print("-> Sending Image to Hardware (Expect brief power dip)...")
-            self.epd.update(img)
-            self.epd.sleep()
-            print("-> Screen Refresh Complete!")
-        except Exception as e:
-            print(f"-> [ERROR] Screen Refresh Failed: {e}")
+                logger.info("-> Sending Image to Hardware (Expect brief power dip)...")
+                self.epd.update(img)
+                logger.info("-> Screen Refresh Complete!")
+            except Exception as e:
+                logger.error(f"-> [ERROR] Screen Refresh Failed: {e}")
+        else:
+            logger.warning("-> Screen Update Skipped (Display not initialized)")
 
-        print("#" * 50 + "\n")
+        logger.info("#" * 50)
 
     def main(self):
         if not self.setup_hardware():
             return
 
-        print("\n=== STARTING SENSOR LOOP ===")
-        print(
+        logger.info("=== STARTING SENSOR LOOP ===")
+        logger.info(
             f"Screen updates every {DISPLAY_UPDATE_INTERVAL}s. Weather updates every {WEATHER_UPDATE_INTERVAL}s."
         )
 
@@ -230,22 +249,29 @@ class TestAirQualityStation:
                     self.process_display_update()
                     self.last_display_update = now
 
-                time.sleep(5)
+                time.sleep(2)  # Check every 2s in test mode
 
         except KeyboardInterrupt:
-            print("\n>>> MANUAL STOP DETECTED. SHUTTING DOWN... <<<")
+            logger.info(">>> MANUAL STOP DETECTED. SHUTTING DOWN... <<<")
+        except Exception as e:
+            logger.critical(f"Fatal error in loop: {e}")
         finally:
             self.shutdown()
 
     def shutdown(self):
+        logger.info("Initiating hardware shutdown...")
         try:
-            self.sps.stop_measurement()
-            self.sps.close()
-            self.epd.sleep()
-            self.epd.close()
-            print("Hardware cleanly shut down.")
-        except:
-            pass
+            if self.sps:
+                self.sps.stop_measurement()
+                self.sps.close()
+
+            if self.epd:
+                self.epd.sleep()
+                self.epd.close()
+
+            logger.info("Hardware cleanly shut down.")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
 
 
 if __name__ == "__main__":
