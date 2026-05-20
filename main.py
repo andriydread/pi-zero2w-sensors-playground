@@ -19,6 +19,9 @@ from utils.weather import get_weather_forecast
 API_UPDATE_INTERVAL = 60  # 1 Minute
 DISPLAY_UPDATE_INTERVAL = 300  # 5 Minutes
 WEATHER_UPDATE_INTERVAL = 3600  # 1 Hour
+
+# We leave this relative path. If it fails, display.py will now automatically
+# fallback to Pi OS system fonts!
 FONT_PATH = "fonts/dejavu-sans-bold.ttf"
 
 # Weather Setup (Replace with your exact coordinates)
@@ -30,6 +33,7 @@ ENABLE_API_UPLOAD = False
 API_ENDPOINT = "http://your-server-ip:port/api/air-quality"
 API_TIMEOUT = 5.0
 
+# Base Logger Setup - ALL other modules inherit this configuration!
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -105,24 +109,26 @@ class AirQualityStation:
 
         # 1. SCD41 (CO2)
         try:
-            if self.scd4x.data_ready:
+            if self.scd4x and self.scd4x.data_ready:
                 self.raw_data["co2"].append(self.scd4x.CO2)
         except Exception:
             pass  # Ignore temporary I2C read errors
 
         # 2. HTU21D (Temp & Humid)
         try:
-            self.raw_data["temp"].append(self.htu.temperature)
-            self.raw_data["humid"].append(self.htu.relative_humidity)
+            if self.htu:
+                self.raw_data["temp"].append(self.htu.temperature)
+                self.raw_data["humid"].append(self.htu.relative_humidity)
         except Exception:
             pass
 
         # 3. SPS30 (PM2.5 & PM10)
         try:
-            success, pm = self.sps.read_values()
-            if success:
-                self.raw_data["pm25"].append(pm["pm2_5_mass"])
-                self.raw_data["pm10"].append(pm["pm10_0_mass"])
+            if self.sps:
+                success, pm = self.sps.read_values()
+                if success:
+                    self.raw_data["pm25"].append(pm["pm2_5_mass"])
+                    self.raw_data["pm10"].append(pm["pm10_0_mass"])
         except Exception:
             pass
 
@@ -130,10 +136,11 @@ class AirQualityStation:
         """Attempts to wake the SCD41 if it resets due to a power dip."""
         logger.info("Attempting SCD41 Auto-Recovery...")
         try:
-            self.scd4x.stop_periodic_measurement()
-            time.sleep(0.5)
-            self.scd4x.start_periodic_measurement()
-            logger.info("SCD41 Restart Command Sent.")
+            if self.scd4x:
+                self.scd4x.stop_periodic_measurement()
+                time.sleep(0.5)
+                self.scd4x.start_periodic_measurement()
+                logger.info("SCD41 Restart Command Sent.")
         except Exception as e:
             logger.warning(f"SCD41 Recovery Failed: {e}")
 
@@ -209,11 +216,13 @@ class AirQualityStation:
         logger.info("Refreshing E-Paper Display with 5-minute averaged data.")
 
         try:
-            img = create_display_image(
-                self.epd.width, self.epd.height, final_data, FONT_PATH
-            )
-            self.epd.update(img)
-            self.epd.sleep()
+            if self.epd:
+                img = create_display_image(
+                    self.epd.width, self.epd.height, final_data, FONT_PATH
+                )
+                self.epd.update(img)
+                # Note: sleep() is already called automatically by epd.update(auto_sleep=True)
+                # But it doesn't hurt to explicitly state intent if desired, though redundant now.
         except Exception as e:
             logger.error(f"Display Error: {e}")
 
@@ -244,18 +253,27 @@ class AirQualityStation:
                 time.sleep(1)
 
         except KeyboardInterrupt:
-            logger.info("Stopping...")
+            logger.info("Stopping manually via KeyboardInterrupt...")
+        except Exception as e:
+            logger.critical(f"Unexpected fatal error in main loop: {e}")
         finally:
             self.shutdown()
 
     def shutdown(self):
+        logger.info("Initiating hardware shutdown...")
         try:
-            self.sps.stop_measurement()
-            self.sps.close()
-            self.epd.sleep()
-            self.epd.close()
-        except:
-            pass
+            if self.sps:
+                self.sps.stop_measurement()
+                self.sps.close()
+                logger.info("SPS30 safely closed.")
+
+            if self.epd:
+                self.epd.sleep()
+                self.epd.close()
+                logger.info("E-Paper display safely closed.")
+
+        except Exception as e:
+            logger.error(f"Error during hardware shutdown: {e}")
 
 
 if __name__ == "__main__":
