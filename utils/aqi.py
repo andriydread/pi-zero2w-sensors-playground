@@ -55,9 +55,7 @@ def get_aqi_category(aqi):
         return "Good"
     if aqi <= 100:
         return "Moderate"
-    if aqi <= 150:
-        return "Unhealthy for Sensitive Groups"
-    if aqi <= 200:
+    if aqi <= 175:
         return "Unhealthy"
     if aqi <= 300:
         return "Very Unhealthy"

@@ -7,37 +7,116 @@ from PIL import Image, ImageDraw, ImageFont
 # Grab the logger inherited from main.py
 logger = logging.getLogger("AirStation.Display")
 
-# --- ICON MAPPING ---
-WMO_ICON_MAP = {
-    0: "icons/sun.png",
-    1: "icons/sun.png",
-    2: "icons/partly_cloudy.png",
-    3: "icons/cloud.png",
-    45: "icons/fog.png",
-    48: "icons/fog.png",
-    51: "icons/rain.png",
-    53: "icons/rain.png",
-    55: "icons/rain.png",
-    56: "icons/rain.png",
-    57: "icons/rain.png",
-    61: "icons/rain.png",
-    63: "icons/rain.png",
-    65: "icons/rain.png",
-    66: "icons/rain.png",
-    67: "icons/rain.png",
-    71: "icons/snow.png",
-    73: "icons/snow.png",
-    75: "icons/snow.png",
-    77: "icons/snow.png",
-    80: "icons/rain.png",
-    81: "icons/rain.png",
-    82: "icons/rain.png",
-    85: "icons/snow.png",
-    86: "icons/snow.png",
-    95: "icons/storm.png",
-    96: "icons/storm.png",
-    99: "icons/storm.png",
-}
+# --- CONFIGURATION ---
+# Change this to "icons", "icons2", or "icons3" to switch themes!
+ICON_THEME = "icons1"
+
+
+def get_wmo_icon_map(theme="icons"):
+    """Returns the correct WMO code mapping based on the selected theme folder."""
+
+    if theme == "icons2":
+        return {
+            0: f"{theme}/sun.png",
+            1: f"{theme}/sun.png",
+            2: f"{theme}/partial-clouds.png",
+            3: f"{theme}/overcast.png",
+            45: f"{theme}/overcast.png",
+            48: f"{theme}/overcast.png",
+            51: f"{theme}/rain-light.png",
+            53: f"{theme}/rain-mid.png",
+            55: f"{theme}/rain-heavy.png",
+            56: f"{theme}/snow-rain.png",
+            57: f"{theme}/snow-rain.png",
+            61: f"{theme}/rain-light.png",
+            63: f"{theme}/rain-mid.png",
+            65: f"{theme}/rain-heavy.png",
+            66: f"{theme}/snow-rain.png",
+            67: f"{theme}/snow-rain.png",
+            71: f"{theme}/snow-light.png",
+            73: f"{theme}/snow-mid.png",
+            75: f"{theme}/snow-heavy.png",
+            77: f"{theme}/snow-light.png",
+            80: f"{theme}/rain-light.png",
+            81: f"{theme}/rain-mid.png",
+            82: f"{theme}/rain-heavy.png",
+            85: f"{theme}/snow-light.png",
+            86: f"{theme}/snow-heavy.png",
+            95: f"{theme}/thunder.png",
+            96: f"{theme}/thunder.png",
+            99: f"{theme}/thunder.png",
+        }
+
+    elif theme == "icons3":
+        return {
+            0: f"{theme}/sun.png",
+            1: f"{theme}/sun.png",
+            2: f"{theme}/mostly-clouds.png",
+            3: f"{theme}/overcast.png",
+            45: f"{theme}/overcast.png",
+            48: f"{theme}/overcast.png",
+            51: f"{theme}/rain.png",
+            53: f"{theme}/rain.png",
+            55: f"{theme}/rain.png",
+            56: f"{theme}/rain.png",
+            57: f"{theme}/rain.png",
+            61: f"{theme}/rain.png",
+            63: f"{theme}/rain.png",
+            65: f"{theme}/rain.png",
+            66: f"{theme}/rain.png",
+            67: f"{theme}/rain.png",
+            71: f"{theme}/snow.png",
+            73: f"{theme}/snow.png",
+            75: f"{theme}/snow.png",
+            77: f"{theme}/snow.png",
+            80: f"{theme}/rain.png",
+            81: f"{theme}/rain.png",
+            82: f"{theme}/rain.png",
+            85: f"{theme}/snow.png",
+            86: f"{theme}/snow.png",
+            95: f"{theme}/thunder.png",
+            96: f"{theme}/storm.png",
+            99: f"{theme}/storm.png",
+        }
+
+    else:
+        # Default original "icons" folder
+        return {
+            0: f"{theme}/sun.png",
+            1: f"{theme}/sun.png",
+            2: f"{theme}/partly_cloudy.png",
+            3: f"{theme}/cloud.png",
+            45: f"{theme}/fog.png",
+            48: f"{theme}/fog.png",
+            51: f"{theme}/rain.png",
+            53: f"{theme}/rain.png",
+            55: f"{theme}/rain.png",
+            56: f"{theme}/rain.png",
+            57: f"{theme}/rain.png",
+            61: f"{theme}/rain.png",
+            63: f"{theme}/rain.png",
+            65: f"{theme}/rain.png",
+            66: f"{theme}/rain.png",
+            67: f"{theme}/rain.png",
+            71: f"{theme}/snow.png",
+            73: f"{theme}/snow.png",
+            75: f"{theme}/snow.png",
+            77: f"{theme}/snow.png",
+            80: f"{theme}/rain.png",
+            81: f"{theme}/rain.png",
+            82: f"{theme}/rain.png",
+            85: f"{theme}/snow.png",
+            86: f"{theme}/snow.png",
+            95: f"{theme}/storm.png",
+            96: f"{theme}/storm.png",
+            99: f"{theme}/storm.png",
+        }
+
+
+# Generate the active map based on your selection
+ACTIVE_ICON_MAP = get_wmo_icon_map(ICON_THEME)
+
+# (The rest of your display.py helper functions remain exactly the same below)
 
 
 def get_co2_category(co2_val):
@@ -75,8 +154,8 @@ def create_display_image(width, height, data, font_path=None):
 
     paths_to_try = [
         font_path,
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Pi OS Default
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",  # Pi OS Alt
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
     ]
 
     for path in paths_to_try:
@@ -87,15 +166,12 @@ def create_display_image(width, height, data, font_path=None):
                 font_md = ImageFont.truetype(path, 18)
                 font_sm = ImageFont.truetype(path, 16)
                 font_xs = ImageFont.truetype(path, 14)
-                break  # Successfully loaded fonts
+                break
             except Exception as e:
                 logger.warning(f"Failed to load font {path}: {e}")
 
-    # Ultimate fallback if everything above fails
     if font_huge is None:
-        logger.error(
-            "All TrueType fonts failed. Falling back to default (Layout will be broken)."
-        )
+        logger.error("All TrueType fonts failed. Falling back to default.")
         font_huge = font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
     # --- Y-COORDINATE GRID ---
@@ -159,15 +235,14 @@ def create_display_image(width, height, data, font_path=None):
         col_start, col_end = i * col_w, (i + 1) * col_w
         icon_x, icon_y = col_start + (col_w - icon_size) // 2, Y_LINE_3 + 2
 
-        # Safely extract weather data
         wmo_code = data.get(f"day{i}_code")
         t_max = data.get(f"day{i}_max")
         t_min = data.get(f"day{i}_min")
         precip = data.get(f"day{i}_precip")
 
-        # Handle Icon
         if wmo_code is not None:
-            icon_path = WMO_ICON_MAP.get(wmo_code, "icons/sun.png")
+            # ---> NOW WE USE THE ACTIVE_ICON_MAP HERE <---
+            icon_path = ACTIVE_ICON_MAP.get(wmo_code, f"{ICON_THEME}/sun.png")
             try:
                 if os.path.exists(icon_path):
                     img_icon = Image.open(icon_path).convert("RGBA")
@@ -192,7 +267,6 @@ def create_display_image(width, height, data, font_path=None):
             except Exception as e:
                 logger.warning(f"Error drawing icon {icon_path}: {e}")
         else:
-            # No weather data: draw empty box with 'N/A'
             draw.rectangle(
                 [icon_x, icon_y, icon_x + icon_size, icon_y + icon_size], outline=0
             )
@@ -205,7 +279,6 @@ def create_display_image(width, height, data, font_path=None):
                 icon_y + (icon_size // 2) - 8,
             )
 
-        # Handle Temperatures
         if t_max is not None and t_min is not None:
             temp_text = f"{t_max:.1f}/{t_min:.1f}"
         else:
@@ -215,7 +288,6 @@ def create_display_image(width, height, data, font_path=None):
             draw, temp_text, font_md, col_start, col_end, icon_y + icon_size - 4
         )
 
-        # Handle Precipitation
         rain_text = f"Rain:{precip}%" if precip is not None else "Rain:--%"
         center_text(
             draw, rain_text, font_xs, col_start, col_end, icon_y + icon_size + 15

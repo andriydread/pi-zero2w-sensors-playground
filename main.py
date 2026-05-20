@@ -18,7 +18,7 @@ from utils.weather import get_weather_forecast
 # --- CONFIGURATION ---
 API_UPDATE_INTERVAL = 60  # 1 Minute
 DISPLAY_UPDATE_INTERVAL = 300  # 5 Minutes
-WEATHER_UPDATE_INTERVAL = 3600  # 1 Hour
+WEATHER_UPDATE_INTERVAL = 1800  # 30 Minutes
 
 FONT_PATH = "fonts/dejavu-sans-bold.ttf"
 
@@ -232,6 +232,8 @@ class AirQualityStation:
 
         try:
             while True:
+                time.sleep(5)
+
                 self.collect_raw_sample()
 
                 now = time.monotonic()
@@ -253,8 +255,6 @@ class AirQualityStation:
                 ) >= DISPLAY_UPDATE_INTERVAL or self.last_display_update == 0:
                     self.process_display_update()
                     self.last_display_update = now
-
-                time.sleep(5)
 
         except KeyboardInterrupt:
             logger.info("Stopping manually via KeyboardInterrupt...")
