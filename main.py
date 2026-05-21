@@ -16,7 +16,6 @@ from utils.display_1day import create_display_image
 from utils.weather_1day import get_weather_forecast
 
 # --- CONFIGURATION ---
-API_UPDATE_INTERVAL = 60  # 1 Minute
 DISPLAY_UPDATE_INTERVAL = 300  # 5 Minutes
 WEATHER_UPDATE_INTERVAL = 1800  # 30 Minutes
 
@@ -48,7 +47,6 @@ class AirQualityStation:
         self.epd = None
 
         # Timing (Set to 0 so they trigger IMMEDIATELY on the first loop pass)
-        self.last_api_update = 0
         self.last_display_update = 0
         self.last_weather_update = 0
 
@@ -66,18 +64,6 @@ class AirQualityStation:
             "tps": [],
         }
 
-        # 1min averages Data Buckets
-        self.api_averages = {
-            "co2": [],
-            "temp": [],
-            "humid": [],
-            "pm1": [],
-            "pm25": [],
-            "pm4": [],
-            "pm10": [],
-            "tps": [],
-        }
-
     # Init sensors
     def setup_hardware(self):
         try:
@@ -85,21 +71,35 @@ class AirQualityStation:
 
             self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
             self.scd4x.start_periodic_measurement()
+            logger.info("SCD41 Setup Complete.")
 
             self.htu = HTU21D(self.i2c)
+            logger.info("HTU21D Setup Complete.")
 
             self.sps = SPS30_UART(port="/dev/serial0", baud_rate=115200)
             self.sps.start_measurement()
+            logger.info("SPS30 Setup Complete.")
 
             self.epd = UC8253C_SPI(rotation=90)
             self.epd.clear()
-
-            logger.info("Hardware Setup Complete.")
+            logger.info("EPaper Display Setup Complete.")
             return True
 
         except Exception as e:
             logger.critical(f"Setup Failed: {e}")
             return False
+
+    def _recover_scd41(self):
+        """Attempts to wake the SCD41 if it resets due to a power dip."""
+        logger.warning("Attempting SCD41 Auto-Recovery...")
+        try:
+            if self.scd4x:
+                self.scd4x.stop_periodic_measurement()
+                time.sleep(0.5)
+                self.scd4x.start_periodic_measurement()
+                logger.info("SCD41 Restart Command Sent.")
+        except Exception as e:
+            logger.error(f"SCD41 Recovery Failed: {e}")
 
     def process_weather_update(self):
         """Return same day weather forecast dict"""
@@ -141,67 +141,16 @@ class AirQualityStation:
             pass
 
         logger.info(
-            f"Raw data collected. CO2={self.raw_data['co2']}, T={self.raw_data['temp']}"
+            f"Raw data collected.\nCO2={self.raw_data['co2']} \nT={[round(i, 1) for i in self.raw_data['temp']]} \nH={[round(i, 1) for i in self.raw_data['humid']]} \nPM2.5={[round(i, 2) for i in self.raw_data['pm25']]}"
         )
 
-    def process_api_update(self) -> Dict[str, Any]:
-        """Averages raw data, handles missing data (None), and returns payload"""
-        avg_payload = {}
+    def process_display_update(self):
+        """Averages raw data, handles API upload, and pushes to the E-Paper screen."""
+        final_data = {}
 
         for key in self.raw_data:
             if self.raw_data[key]:
                 val = sum(self.raw_data[key]) / len(self.raw_data[key])
-
-                # Apply specific formatting rules
-                if key == "co2":
-                    data = int(val)
-                elif key in ["temp", "humid"]:
-                    data = round(val, 1)
-                else:
-                    data = round(val, 2)
-            else:
-                data = None
-
-            avg_payload[key] = data
-
-            # Only append to the long-term bucket if we have actual data
-            if data is not None:
-                self.api_averages[key].append(data)
-
-            # Clear raw bucket for the next minute
-            self.raw_data[key] = []
-
-        # Safely calculate AQI only if both PM values exist
-        if avg_payload.get("pm25") is not None and avg_payload.get("pm10") is not None:
-            avg_payload["aqi"] = calculate_aqi(avg_payload["pm25"], avg_payload["pm10"])
-            avg_payload["aqi_cat"] = get_aqi_category(avg_payload["aqi"])
-        else:
-            avg_payload["aqi"] = None
-            avg_payload["aqi_cat"] = "N/A"
-
-        avg_payload["timestamp"] = datetime.now().isoformat()
-
-        if ENABLE_API_UPLOAD:
-            self.post_to_server(avg_payload)
-
-        logger.info(
-            f"API Update complete. CO2={avg_payload['co2']}, AQI={avg_payload['aqi']}"
-        )
-        return avg_payload
-
-    def post_to_server(self, payload: Dict[str, Any]):
-        try:
-            requests.post(API_ENDPOINT, json=payload, timeout=API_TIMEOUT)
-        except Exception as e:
-            logger.warning(f"API Upload Failed: {e}")
-
-    def process_display_update(self):
-        """Averages the API bucket and pushes to the E-Paper screen."""
-        final_data = {}
-
-        for key in self.api_averages:
-            if self.api_averages[key]:
-                val = sum(self.api_averages[key]) / len(self.api_averages[key])
 
                 if key == "co2":
                     final_data[key] = int(val)
@@ -212,8 +161,13 @@ class AirQualityStation:
             else:
                 final_data[key] = None
 
-            self.api_averages[key] = []
+                if key == "co2":
+                    self._recover_scd41()
 
+            # Clear raw bucket for the next interval
+            self.raw_data[key] = []
+
+        # Safely calculate AQI only if both PM values exist
         if final_data.get("pm25") is not None and final_data.get("pm10") is not None:
             final_data["aqi"] = calculate_aqi(final_data["pm25"], final_data["pm10"])
             final_data["aqi_cat"] = get_aqi_category(final_data["aqi"])
@@ -221,6 +175,13 @@ class AirQualityStation:
             final_data["aqi"] = None
             final_data["aqi_cat"] = "N/A"
 
+        final_data["timestamp"] = datetime.now().isoformat()
+
+        # Handle API Upload
+        if ENABLE_API_UPLOAD:
+            self.post_to_server(final_data)
+
+        # Merge weather data for display
         final_data.update(self.current_weather)
 
         logger.info("Refreshing E-Paper Display.")
@@ -234,13 +195,22 @@ class AirQualityStation:
         except Exception as e:
             logger.error(f"Display Error: {e}")
 
+    def post_to_server(self, payload: Dict[str, Any]):
+        try:
+            requests.post(API_ENDPOINT, json=payload, timeout=API_TIMEOUT)
+            logger.info(
+                f"API Upload complete. CO2={payload['co2']}, AQI={payload['aqi']}"
+            )
+        except Exception as e:
+            logger.warning(f"API Upload Failed: {e}")
+
     def main(self):
         if not self.setup_hardware():
             return
 
         try:
             while True:
-                time.sleep(5)
+                time.sleep(10)
 
                 self.collect_raw_sample()
 
@@ -251,12 +221,6 @@ class AirQualityStation:
                 ) >= WEATHER_UPDATE_INTERVAL or self.last_weather_update == 0:
                     self.process_weather_update()
                     self.last_weather_update = now
-
-                if (
-                    now - self.last_api_update
-                ) >= API_UPDATE_INTERVAL or self.last_api_update == 0:
-                    self.process_api_update()
-                    self.last_api_update = now
 
                 if (
                     now - self.last_display_update
