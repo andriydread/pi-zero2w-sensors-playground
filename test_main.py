@@ -9,8 +9,8 @@ from adafruit_htu21d import HTU21D
 from lib.sps30 import SPS30_UART
 from lib.uc8253c import UC8253C_SPI
 from utils.aqi import calculate_aqi, get_aqi_category
-from utils.display import create_display_image
-from utils.weather import get_weather_forecast
+from utils.display_3days import create_display_image
+from utils.weather_3days import get_weather_forecast
 
 # --- TESTING TIMERS (SUPER FAST) ---
 API_UPDATE_INTERVAL = 10  # Average data every 10 seconds

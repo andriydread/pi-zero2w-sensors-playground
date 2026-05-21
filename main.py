@@ -12,8 +12,8 @@ from adafruit_htu21d import HTU21D
 from lib.sps30 import SPS30_UART
 from lib.uc8253c import UC8253C_SPI
 from utils.aqi import calculate_aqi, get_aqi_category
-from utils.display import create_display_image
-from utils.weather import get_weather_forecast
+from utils.display_1day import create_display_image
+from utils.weather_1day import get_weather_forecast
 
 # --- CONFIGURATION ---
 API_UPDATE_INTERVAL = 60  # 1 Minute
@@ -54,7 +54,7 @@ class AirQualityStation:
 
         self.current_weather = {}
 
-        # Data Buckets (Now including pm1, pm4, and typical particle size 'tps')
+        # 5sec intervals Raw Data Buckets
         self.raw_data = {
             "co2": [],
             "temp": [],
@@ -66,6 +66,7 @@ class AirQualityStation:
             "tps": [],
         }
 
+        # 1min averages Data Buckets
         self.api_averages = {
             "co2": [],
             "temp": [],
@@ -77,6 +78,7 @@ class AirQualityStation:
             "tps": [],
         }
 
+    # Init sensors
     def setup_hardware(self):
         try:
             self.i2c = busio.I2C(board.SCL, board.SDA)
@@ -100,13 +102,15 @@ class AirQualityStation:
             return False
 
     def process_weather_update(self):
+        """Return same day weather forecast dict"""
+
         logger.info("Fetching latest weather forecast...")
         new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON)
         if new_weather:
             self.current_weather = new_weather
 
     def collect_raw_sample(self):
-        """Reads sensors independently so one failure doesn't block the others."""
+        """Reads sensors independently so one failure doesn't block the others"""
 
         # 1. SCD41 (CO2)
         try:
@@ -136,8 +140,12 @@ class AirQualityStation:
         except Exception:
             pass
 
+        logger.info(
+            f"Raw data collected. CO2={self.raw_data['co2']}, T={self.raw_data['temp']}"
+        )
+
     def process_api_update(self) -> Dict[str, Any]:
-        """Averages raw data, handles missing data (None), and returns payload."""
+        """Averages raw data, handles missing data (None), and returns payload"""
         avg_payload = {}
 
         for key in self.raw_data:
@@ -147,12 +155,11 @@ class AirQualityStation:
                 # Apply specific formatting rules
                 if key == "co2":
                     data = int(val)
-                elif key in ["temp", "humid", "tps"]:
+                elif key in ["temp", "humid"]:
                     data = round(val, 1)
                 else:
                     data = round(val, 2)
             else:
-                # No data available (Sensor failure/crash)
                 data = None
 
             avg_payload[key] = data
@@ -177,7 +184,9 @@ class AirQualityStation:
         if ENABLE_API_UPLOAD:
             self.post_to_server(avg_payload)
 
-        logger.info(f"API Update complete. Payload: {avg_payload}")
+        logger.info(
+            f"API Update complete. CO2={avg_payload['co2']}, AQI={avg_payload['aqi']}"
+        )
         return avg_payload
 
     def post_to_server(self, payload: Dict[str, Any]):
@@ -194,10 +203,9 @@ class AirQualityStation:
             if self.api_averages[key]:
                 val = sum(self.api_averages[key]) / len(self.api_averages[key])
 
-                # Re-apply formatting rules for display dictionary
                 if key == "co2":
                     final_data[key] = int(val)
-                elif key in ["temp", "humid", "tps"]:
+                elif key in ["temp", "humid"]:
                     final_data[key] = round(val, 1)
                 else:
                     final_data[key] = round(val, 2)

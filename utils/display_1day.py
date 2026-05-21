@@ -9,7 +9,7 @@ logger = logging.getLogger("AirStation.Display")
 
 # --- CONFIGURATION ---
 # Change this to "icons", "icons2", or "icons3" to switch themes!
-ICON_THEME = "icons1"
+ICON_THEME = "icons"
 
 
 def get_wmo_icon_map(theme="icons"):
@@ -115,8 +115,6 @@ def get_wmo_icon_map(theme="icons"):
 
 # Generate the active map based on your selection
 ACTIVE_ICON_MAP = get_wmo_icon_map(ICON_THEME)
-
-# (The rest of your display.py helper functions remain exactly the same below)
 
 
 def get_co2_category(co2_val):
@@ -224,7 +222,7 @@ def create_display_image(width, height, data, font_path=None):
 
     draw.line((0, Y_LINE_3, width, Y_LINE_3), fill=0, width=1)
 
-    # --- 4. WEATHER FORECAST ---
+    # --- 4. WEATHER FORECAST (HOURLY BLOCKS) ---
     col_w = width // 3
     draw.line((col_w, Y_LINE_3, col_w, height), fill=0, width=1)
     draw.line((col_w * 2, Y_LINE_3, col_w * 2, height), fill=0, width=1)
@@ -233,15 +231,25 @@ def create_display_image(width, height, data, font_path=None):
 
     for i in range(3):
         col_start, col_end = i * col_w, (i + 1) * col_w
-        icon_x, icon_y = col_start + (col_w - icon_size) // 2, Y_LINE_3 + 2
 
-        wmo_code = data.get(f"day{i}_code")
-        t_max = data.get(f"day{i}_max")
-        t_min = data.get(f"day{i}_min")
-        precip = data.get(f"day{i}_precip")
+        # Shifted down slightly to make room for the Time string at the top
+        icon_x, icon_y = col_start + (col_w - icon_size) // 2, Y_LINE_3 + 18
 
+        # Safely extract data from the new dictionary structure (Keys 1, 2, 3)
+        block_key = i + 1
+        # Check both int and str to be safe against JSON serialization quirks
+        block_data = data.get(block_key) or data.get(str(block_key))
+
+        if block_data and len(block_data) == 5:
+            time_str, t_max, t_min, precip, wmo_code = block_data
+        else:
+            time_str, t_max, t_min, precip, wmo_code = "---", None, None, None, None
+
+        # 1. Draw Time Period (e.g., "09:00-13:00") at the top
+        center_text(draw, time_str, font_xs, col_start, col_end, Y_LINE_3 + 2)
+
+        # 2. Draw Icon
         if wmo_code is not None:
-            # ---> NOW WE USE THE ACTIVE_ICON_MAP HERE <---
             icon_path = ACTIVE_ICON_MAP.get(wmo_code, f"{ICON_THEME}/sun.png")
             try:
                 if os.path.exists(icon_path):
@@ -279,6 +287,7 @@ def create_display_image(width, height, data, font_path=None):
                 icon_y + (icon_size // 2) - 8,
             )
 
+        # 3. Draw Max/Min Temp
         if t_max is not None and t_min is not None:
             temp_text = f"{t_max:.1f}/{t_min:.1f}"
         else:
@@ -288,6 +297,7 @@ def create_display_image(width, height, data, font_path=None):
             draw, temp_text, font_md, col_start, col_end, icon_y + icon_size - 4
         )
 
+        # 4. Draw Rain Probability
         rain_text = f"Rain:{precip}%" if precip is not None else "Rain:--%"
         center_text(
             draw, rain_text, font_xs, col_start, col_end, icon_y + icon_size + 15
