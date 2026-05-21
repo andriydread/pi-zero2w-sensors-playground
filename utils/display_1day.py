@@ -7,114 +7,40 @@ from PIL import Image, ImageDraw, ImageFont
 # Grab the logger inherited from main.py
 logger = logging.getLogger("AirStation.Display")
 
+
 # --- CONFIGURATION ---
-# Change this to "icons", "icons2", or "icons3" to switch themes!
-ICON_THEME = "icons"
+theme = "fixed_icons"
 
-
-def get_wmo_icon_map(theme="icons"):
-    """Returns the correct WMO code mapping based on the selected theme folder."""
-
-    if theme == "icons2":
-        return {
-            0: f"{theme}/sun.png",
-            1: f"{theme}/sun.png",
-            2: f"{theme}/partial-clouds.png",
-            3: f"{theme}/overcast.png",
-            45: f"{theme}/overcast.png",
-            48: f"{theme}/overcast.png",
-            51: f"{theme}/rain-light.png",
-            53: f"{theme}/rain-mid.png",
-            55: f"{theme}/rain-heavy.png",
-            56: f"{theme}/snow-rain.png",
-            57: f"{theme}/snow-rain.png",
-            61: f"{theme}/rain-light.png",
-            63: f"{theme}/rain-mid.png",
-            65: f"{theme}/rain-heavy.png",
-            66: f"{theme}/snow-rain.png",
-            67: f"{theme}/snow-rain.png",
-            71: f"{theme}/snow-light.png",
-            73: f"{theme}/snow-mid.png",
-            75: f"{theme}/snow-heavy.png",
-            77: f"{theme}/snow-light.png",
-            80: f"{theme}/rain-light.png",
-            81: f"{theme}/rain-mid.png",
-            82: f"{theme}/rain-heavy.png",
-            85: f"{theme}/snow-light.png",
-            86: f"{theme}/snow-heavy.png",
-            95: f"{theme}/thunder.png",
-            96: f"{theme}/thunder.png",
-            99: f"{theme}/thunder.png",
-        }
-
-    elif theme == "icons3":
-        return {
-            0: f"{theme}/sun.png",
-            1: f"{theme}/sun.png",
-            2: f"{theme}/mostly-clouds.png",
-            3: f"{theme}/overcast.png",
-            45: f"{theme}/overcast.png",
-            48: f"{theme}/overcast.png",
-            51: f"{theme}/rain.png",
-            53: f"{theme}/rain.png",
-            55: f"{theme}/rain.png",
-            56: f"{theme}/rain.png",
-            57: f"{theme}/rain.png",
-            61: f"{theme}/rain.png",
-            63: f"{theme}/rain.png",
-            65: f"{theme}/rain.png",
-            66: f"{theme}/rain.png",
-            67: f"{theme}/rain.png",
-            71: f"{theme}/snow.png",
-            73: f"{theme}/snow.png",
-            75: f"{theme}/snow.png",
-            77: f"{theme}/snow.png",
-            80: f"{theme}/rain.png",
-            81: f"{theme}/rain.png",
-            82: f"{theme}/rain.png",
-            85: f"{theme}/snow.png",
-            86: f"{theme}/snow.png",
-            95: f"{theme}/thunder.png",
-            96: f"{theme}/storm.png",
-            99: f"{theme}/storm.png",
-        }
-
-    else:
-        # Default original "icons" folder
-        return {
-            0: f"{theme}/sun.png",
-            1: f"{theme}/sun.png",
-            2: f"{theme}/partly_cloudy.png",
-            3: f"{theme}/cloud.png",
-            45: f"{theme}/fog.png",
-            48: f"{theme}/fog.png",
-            51: f"{theme}/rain.png",
-            53: f"{theme}/rain.png",
-            55: f"{theme}/rain.png",
-            56: f"{theme}/rain.png",
-            57: f"{theme}/rain.png",
-            61: f"{theme}/rain.png",
-            63: f"{theme}/rain.png",
-            65: f"{theme}/rain.png",
-            66: f"{theme}/rain.png",
-            67: f"{theme}/rain.png",
-            71: f"{theme}/snow.png",
-            73: f"{theme}/snow.png",
-            75: f"{theme}/snow.png",
-            77: f"{theme}/snow.png",
-            80: f"{theme}/rain.png",
-            81: f"{theme}/rain.png",
-            82: f"{theme}/rain.png",
-            85: f"{theme}/snow.png",
-            86: f"{theme}/snow.png",
-            95: f"{theme}/storm.png",
-            96: f"{theme}/storm.png",
-            99: f"{theme}/storm.png",
-        }
-
-
-# Generate the active map based on your selection
-ACTIVE_ICON_MAP = get_wmo_icon_map(ICON_THEME)
+ACTIVE_ICON_MAP = {
+    0: f"{theme}/sun.png",
+    1: f"{theme}/sun.png",
+    2: f"{theme}/partly_cloudy.png",
+    3: f"{theme}/cloud.png",
+    45: f"{theme}/fog.png",
+    48: f"{theme}/fog.png",
+    51: f"{theme}/rain.png",
+    53: f"{theme}/rain.png",
+    55: f"{theme}/rain.png",
+    56: f"{theme}/rain.png",
+    57: f"{theme}/rain.png",
+    61: f"{theme}/rain.png",
+    63: f"{theme}/rain.png",
+    65: f"{theme}/rain.png",
+    66: f"{theme}/rain.png",
+    67: f"{theme}/rain.png",
+    71: f"{theme}/snow.png",
+    73: f"{theme}/snow.png",
+    75: f"{theme}/snow.png",
+    77: f"{theme}/snow.png",
+    80: f"{theme}/rain.png",
+    81: f"{theme}/rain.png",
+    82: f"{theme}/rain.png",
+    85: f"{theme}/snow.png",
+    86: f"{theme}/snow.png",
+    95: f"{theme}/storm.png",
+    96: f"{theme}/storm.png",
+    99: f"{theme}/storm.png",
+}
 
 
 def get_co2_category(co2_val):
@@ -250,7 +176,7 @@ def create_display_image(width, height, data, font_path=None):
 
         # 2. Draw Icon
         if wmo_code is not None:
-            icon_path = ACTIVE_ICON_MAP.get(wmo_code, f"{ICON_THEME}/sun.png")
+            icon_path = ACTIVE_ICON_MAP.get(wmo_code, f"{theme}/sun.png")
             try:
                 if os.path.exists(icon_path):
                     img_icon = Image.open(icon_path).convert("RGBA")
