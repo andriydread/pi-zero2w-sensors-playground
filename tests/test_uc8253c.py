@@ -1,12 +1,3 @@
-"""
-UC8253C E-Paper Hardware Integration Test
-Draws shapes and text to verify SPI communication, ping-pong buffering,
-and refresh modes (Full vs Partial).
-
-Usage:
-    python3 test_uc8253c.py
-"""
-
 import logging
 import os
 import sys
