@@ -33,7 +33,7 @@ def calculate_aqi(pm25: float, pm10: float) -> int:
             return _linear(400, 301, 350.4, 250.5, c)
         if c <= 500.4:
             return _linear(500, 401, 500.4, 350.5, c)
-        return 500  # Maxed out
+        return 500
 
     def aqi_pm10(c):
         if c <= 54:
@@ -66,7 +66,7 @@ def get_aqi_category(aqi: int) -> str:
     if aqi <= 100:
         return "Moderate"
     if aqi <= 175:
-        return "Unhealthy"  # Covers both 'Sensitive Groups' and 'Unhealthy' for space saving
+        return "Unhealthy"
     if aqi <= 300:
         return "Very Unhealthy"
     return "Hazardous"

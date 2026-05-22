@@ -118,8 +118,6 @@ class AirQualityStation:
         )
         time.sleep(seconds_to_wait)
 
-        # Small extra delay to ensure we're past the transition
-        time.sleep(0.1)
         logger.info("Sync complete. Beginning main loop.")
 
     def setup_hardware(self):
@@ -229,8 +227,8 @@ class AirQualityStation:
                 else:
                     final_data[key] = round(val, 2)
             else:
-                final_data[key] = "--"
-                # If CO2 buffer is completely empty for 5 minutes, the sensor is likely hung.
+                final_data[key] = None
+                # If CO2 buffer is completely empty for 5 minutes, SCD41 is likely hung.
                 if key == "co2":
                     self._recover_scd41()
 
@@ -244,8 +242,8 @@ class AirQualityStation:
             final_data["aqi"] = calculate_aqi(final_data["pm25"], final_data["pm10"])
             final_data["aqi_cat"] = get_aqi_category(final_data["aqi"])
         else:
-            final_data["aqi"] = "--"
-            final_data["aqi_cat"] = "N/A"
+            final_data["aqi"] = None
+            final_data["aqi_cat"] = None
 
         final_data["timestamp"] = datetime.now().isoformat()
 
@@ -253,19 +251,19 @@ class AirQualityStation:
         if ENABLE_API_UPLOAD:
             self.post_to_server(final_data)
 
-        # Rendering
         final_data.update(self.current_weather)
+
         logger.info(
             f"Refreshing Screen | AQI: {final_data['aqi']} | CO2: {final_data['co2']} | T: {final_data['temp']}"
         )
 
+        # Rendering
         try:
             if self.epd:
-                # Every 10th minute (or the very first time), do a FULL refresh to clear ghosting
+                # Every 10th minute (and first time), do a FULL refresh to clear ghosting
                 if self.refresh_count % 10 == 0:
                     self.epd.set_full_refresh()
                 else:
-                    # Otherwise do a fast PARTIAL refresh to avoid flashing
                     self.epd.set_partial_refresh()
 
                 img = create_display_image(
@@ -279,9 +277,7 @@ class AirQualityStation:
 
     def post_to_server(self, payload: Dict[str, Any]):
         try:
-            # Convert UI "--" strings back to `null` for strict JSON APIs
-            api_payload = {k: (v if v != "--" else None) for k, v in payload.items()}
-            self.session.post(API_ENDPOINT, json=api_payload, timeout=API_TIMEOUT)
+            self.session.post(API_ENDPOINT, json=payload, timeout=API_TIMEOUT)
             logger.info("API Upload successful.")
         except Exception as e:
             logger.warning(f"API Upload Failed: {e}")
@@ -315,8 +311,10 @@ class AirQualityStation:
                     self.process_display_update()
                     self.last_display_update = now
 
-                # 4. Rest CPU and yield to OS
-                time.sleep(SAMPLE_INTERVAL)
+                # 4. Rest CPU and yield to OS (Dynamic sleep to prevent time drift)
+                loop_duration = time.monotonic() - now
+                sleep_time = max(0, SAMPLE_INTERVAL - loop_duration)
+                time.sleep(sleep_time)
 
         except KeyboardInterrupt:
             logger.info("Stopping manually via KeyboardInterrupt...")
