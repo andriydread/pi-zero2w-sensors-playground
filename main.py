@@ -28,19 +28,19 @@ from utils.weather_1day import get_weather_forecast
 load_dotenv()
 
 # --- SYSTEM CONFIGURATION ---
-DISPLAY_UPDATE_INTERVAL = int(os.getenv("DISPLAY_UPDATE_INTERVAL", 300))  # 5 mins
-WEATHER_UPDATE_INTERVAL = int(os.getenv("WEATHER_UPDATE_INTERVAL", 1800))  # 30 mins
+DISPLAY_UPDATE_INTERVAL = int(os.getenv("DISPLAY_UPDATE_INTERVAL"))
+WEATHER_UPDATE_INTERVAL = int(os.getenv("WEATHER_UPDATE_INTERVAL"))
 SAMPLE_INTERVAL = 10  # Seconds between physical sensor reads
 
 FONT_PATH = "fonts/dejavu-sans-bold.ttf"
 
-# Defaults to Lviv/Ukraine
-WEATHER_LAT = float(os.getenv("WEATHER_LAT", 49.842957))
-WEATHER_LON = float(os.getenv("WEATHER_LON", 24.031111))
+
+WEATHER_LAT = float(os.getenv("WEATHER_LAT"))
+WEATHER_LON = float(os.getenv("WEATHER_LON"))
 
 # API Setup
-ENABLE_API_UPLOAD = os.getenv("ENABLE_API_UPLOAD", "False").lower() == "true"
-API_ENDPOINT = os.getenv("API_ENDPOINT", "http://your-server-ip:port/api/air-quality")
+ENABLE_API_UPLOAD = os.getenv("ENABLE_API_UPLOAD").lower() == "true"
+API_ENDPOINT = os.getenv("API_ENDPOINT")
 API_TIMEOUT = 5.0
 
 # --- LOGGING SETUP ---
@@ -79,6 +79,8 @@ class AirQualityStation:
 
         self.current_weather = {}
 
+        self.refresh_count = 0
+
         self.raw_data = {
             "co2": [],
             "temp": [],
@@ -107,6 +109,19 @@ class AirQualityStation:
         session.mount("https://", adapter)
         return session
 
+    def _sync_to_minute_start(self):
+        """Waits until the beginning of the next minute before proceeding."""
+        now = datetime.now()
+        seconds_to_wait = 60 - now.second
+        logger.info(
+            f"Syncing to next minute start. Waiting for {seconds_to_wait} seconds..."
+        )
+        time.sleep(seconds_to_wait)
+
+        # Small extra delay to ensure we're past the transition
+        time.sleep(0.1)
+        logger.info("Sync complete. Beginning main loop.")
+
     def setup_hardware(self):
         """Initializes all buses and sensors. Returns False if a critical failure occurs."""
         try:
@@ -116,6 +131,7 @@ class AirQualityStation:
             # SCD41 (CO2 - I2C)
             self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
             self.scd4x.start_periodic_measurement()
+            time.sleep(5)  # Give 5 sec for SCD41 to collect first reading
             logger.info("SCD41 Setup Complete.")
 
             # HTU21D (Temp/Humid - I2C)
@@ -245,10 +261,19 @@ class AirQualityStation:
 
         try:
             if self.epd:
+                # Every 10th minute (or the very first time), do a FULL refresh to clear ghosting
+                if self.refresh_count % 10 == 0:
+                    self.epd.set_full_refresh()
+                else:
+                    # Otherwise do a fast PARTIAL refresh to avoid flashing
+                    self.epd.set_partial_refresh()
+
                 img = create_display_image(
                     self.epd.width, self.epd.height, final_data, FONT_PATH
                 )
                 self.epd.update(img)
+
+                self.refresh_count += 1
         except Exception as e:
             logger.error(f"E-Paper Render/SPI Error: {e}")
 
@@ -266,6 +291,8 @@ class AirQualityStation:
             sys.exit(1)
 
         logger.info("Starting Main Event Loop.")
+
+        self._sync_to_minute_start()
 
         try:
             while True:

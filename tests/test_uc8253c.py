@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 
-from uc8253c import UC8253C_SPI
+from lib.uc8253c import UC8253C_SPI
 
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"

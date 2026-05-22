@@ -264,7 +264,7 @@ class SPS30_UART:
 
     def get_auto_cleaning_interval(self):
         """Returns the auto-cleaning interval in seconds."""
-        success, res = self._execute_command(0x80)
+        success, res = self._execute_command(0x80, [0x00])
         if success and len(res) == 4:
             return True, struct.unpack(">I", res)[0]
         return False, res
@@ -275,7 +275,7 @@ class SPS30_UART:
             logger.error("Cleaning interval must be a positive 32-bit integer.")
             return False
 
-        data = list(struct.pack(">I", seconds))
+        data = [0x00] + list(struct.pack(">I", seconds))
         success, _ = self._execute_command(0x80, data)
         return success
 
@@ -292,7 +292,7 @@ class SPS30_UART:
 
     def get_status_register(self):
         """Reads and clears sensor fault flags (fan/laser failure)."""
-        success, res = self._execute_command(0xD2)
+        success, res = self._execute_command(0xD2, [0x00])
         if not success or len(res) < 4:
             return False, res
 

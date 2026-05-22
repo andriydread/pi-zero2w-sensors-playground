@@ -7,7 +7,7 @@ import time
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 
-from sps30 import SPS30_UART
+from lib.sps30 import SPS30_UART
 
 # Configure logging so we can see the driver's internal debug/error messages
 logging.basicConfig(
