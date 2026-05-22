@@ -1,16 +1,24 @@
-def calculate_aqi(pm25, pm10):
+"""
+AQI Calculation Utility
+Converts raw PM2.5 and PM10 mass concentrations (µg/m³) into the US EPA Air Quality Index.
+"""
+
+
+def calculate_aqi(pm25: float, pm10: float) -> int:
     """
-    Calculates the US EPA Air Quality Index (AQI) for PM2.5 and PM10.
-    Returns the higher of the two indices.
+    Calculates the US EPA AQI for both PM2.5 and PM10.
+    The final AQI is always the highest (worst) index of all pollutants measured.
     """
 
     def _linear(aqi_high, aqi_low, conc_high, conc_low, conc):
+        """Standard EPA linear interpolation formula."""
         return round(
             ((aqi_high - aqi_low) / (conc_high - conc_low)) * (conc - conc_low)
             + aqi_low
         )
 
     def aqi_pm25(c):
+        # Breakpoints mapped directly from US EPA standard tables
         if c <= 12.0:
             return _linear(50, 0, 12.0, 0, c)
         if c <= 35.4:
@@ -25,7 +33,7 @@ def calculate_aqi(pm25, pm10):
             return _linear(400, 301, 350.4, 250.5, c)
         if c <= 500.4:
             return _linear(500, 401, 500.4, 350.5, c)
-        return 500
+        return 500  # Maxed out
 
     def aqi_pm10(c):
         if c <= 54:
@@ -44,19 +52,21 @@ def calculate_aqi(pm25, pm10):
             return _linear(500, 401, 604, 505, c)
         return 500
 
-    aqi25 = aqi_pm25(pm25)
-    aqi10 = aqi_pm10(pm10)
+    # Ensure negative readings (which can occur during sensor warmup) are floored to 0
+    aqi25 = aqi_pm25(max(0, pm25))
+    aqi10 = aqi_pm10(max(0, pm10))
 
     return max(aqi25, aqi10)
 
 
-def get_aqi_category(aqi):
+def get_aqi_category(aqi: int) -> str:
+    """Translates the numerical AQI into standard health risk categories."""
     if aqi <= 50:
         return "Good"
     if aqi <= 100:
         return "Moderate"
     if aqi <= 175:
-        return "Unhealthy"
+        return "Unhealthy"  # Covers both 'Sensitive Groups' and 'Unhealthy' for space saving
     if aqi <= 300:
         return "Very Unhealthy"
     return "Hazardous"

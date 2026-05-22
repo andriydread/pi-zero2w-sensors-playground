@@ -1,13 +1,18 @@
 import logging
 import time
+import os
 from datetime import datetime
 from typing import Any, Dict
+from logging.handlers import TimedRotatingFileHandler
 
 import adafruit_scd4x
 import board
 import busio
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from adafruit_htu21d import HTU21D
+from dotenv import load_dotenv
 
 from lib.sps30 import SPS30_UART
 from lib.uc8253c import UC8253C_SPI
@@ -15,26 +20,42 @@ from utils.aqi import calculate_aqi, get_aqi_category
 from utils.display_1day import create_display_image
 from utils.weather_1day import get_weather_forecast
 
+# Load environment variables from .env file
+load_dotenv()
+
 # --- CONFIGURATION ---
-DISPLAY_UPDATE_INTERVAL = 300  # 5 Minutes
-WEATHER_UPDATE_INTERVAL = 1800  # 30 Minutes
+DISPLAY_UPDATE_INTERVAL = int(os.getenv("DISPLAY_UPDATE_INTERVAL", 300))
+WEATHER_UPDATE_INTERVAL = int(os.getenv("WEATHER_UPDATE_INTERVAL", 1800))
 
 FONT_PATH = "fonts/dejavu-sans-bold.ttf"
 
 # Weather Setup
-WEATHER_LAT = 49.842957
-WEATHER_LON = 24.031111
+WEATHER_LAT = float(os.getenv("WEATHER_LAT", 49.842957))
+WEATHER_LON = float(os.getenv("WEATHER_LON", 24.031111))
 
 # API Setup
-ENABLE_API_UPLOAD = False
-API_ENDPOINT = "http://your-server-ip:port/api/air-quality"
+ENABLE_API_UPLOAD = os.getenv("ENABLE_API_UPLOAD", "False").lower() == "true"
+API_ENDPOINT = os.getenv("API_ENDPOINT", "http://your-server-ip:port/api/air-quality")
 API_TIMEOUT = 5.0
 
 # Base Logger Setup
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
 logger = logging.getLogger("AirStation")
+logger.setLevel(logging.INFO)
+
+# Formatter
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+# Console Handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# Timed Rotating File Handler (7 days)
+file_handler = TimedRotatingFileHandler(
+    "airstation.log", when="midnight", interval=1, backupCount=7
+)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 
 class AirQualityStation:
@@ -45,6 +66,9 @@ class AirQualityStation:
         self.sps = None
         self.htu = None
         self.epd = None
+
+        # Networking
+        self.session = self._setup_session()
 
         # Timing (Set to 0 so they trigger IMMEDIATELY on the first loop pass)
         self.last_display_update = 0
@@ -63,6 +87,20 @@ class AirQualityStation:
             "pm10": [],
             "tps": [],
         }
+
+    def _setup_session(self):
+        """Creates a requests session with a retry strategy."""
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST", "GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
     # Init sensors
     def setup_hardware(self):
@@ -105,7 +143,7 @@ class AirQualityStation:
         """Return same day weather forecast dict"""
 
         logger.info("Fetching latest weather forecast...")
-        new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON)
+        new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON, session=self.session)
         if new_weather:
             self.current_weather = new_weather
 
@@ -159,7 +197,7 @@ class AirQualityStation:
                 else:
                     final_data[key] = round(val, 2)
             else:
-                final_data[key] = None
+                final_data[key] = "--"
 
                 if key == "co2":
                     self._recover_scd41()
@@ -168,11 +206,13 @@ class AirQualityStation:
             self.raw_data[key] = []
 
         # Safely calculate AQI only if both PM values exist
-        if final_data.get("pm25") is not None and final_data.get("pm10") is not None:
+        if isinstance(final_data.get("pm25"), (int, float)) and isinstance(
+            final_data.get("pm10"), (int, float)
+        ):
             final_data["aqi"] = calculate_aqi(final_data["pm25"], final_data["pm10"])
             final_data["aqi_cat"] = get_aqi_category(final_data["aqi"])
         else:
-            final_data["aqi"] = None
+            final_data["aqi"] = "--"
             final_data["aqi_cat"] = "N/A"
 
         final_data["timestamp"] = datetime.now().isoformat()
@@ -197,7 +237,11 @@ class AirQualityStation:
 
     def post_to_server(self, payload: Dict[str, Any]):
         try:
-            requests.post(API_ENDPOINT, json=payload, timeout=API_TIMEOUT)
+            # Prepare payload for API (convert "--" back to None/null for JSON)
+            api_payload = {
+                k: (v if v != "--" else None) for k, v in payload.items()
+            }
+            self.session.post(API_ENDPOINT, json=api_payload, timeout=API_TIMEOUT)
             logger.info(
                 f"API Upload complete. CO2={payload['co2']}, AQI={payload['aqi']}"
             )

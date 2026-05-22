@@ -1,45 +1,48 @@
+"""
+Display Renderer Utility
+Generates the 1-bit Black/White Image to be pushed to the E-Paper display.
+"""
+
 import logging
 import os
 from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
-# Grab the logger inherited from main.py
 logger = logging.getLogger("AirStation.Display")
 
-
-# --- CONFIGURATION ---
-theme = "fixed_icons"
+# Location of icon PNGs
+THEME_DIR = "icons"
 
 ACTIVE_ICON_MAP = {
-    0: f"{theme}/sun.png",
-    1: f"{theme}/sun.png",
-    2: f"{theme}/partly_cloudy.png",
-    3: f"{theme}/cloud.png",
-    45: f"{theme}/fog.png",
-    48: f"{theme}/fog.png",
-    51: f"{theme}/rain.png",
-    53: f"{theme}/rain.png",
-    55: f"{theme}/rain.png",
-    56: f"{theme}/rain.png",
-    57: f"{theme}/rain.png",
-    61: f"{theme}/rain.png",
-    63: f"{theme}/rain.png",
-    65: f"{theme}/rain.png",
-    66: f"{theme}/rain.png",
-    67: f"{theme}/rain.png",
-    71: f"{theme}/snow.png",
-    73: f"{theme}/snow.png",
-    75: f"{theme}/snow.png",
-    77: f"{theme}/snow.png",
-    80: f"{theme}/rain.png",
-    81: f"{theme}/rain.png",
-    82: f"{theme}/rain.png",
-    85: f"{theme}/snow.png",
-    86: f"{theme}/snow.png",
-    95: f"{theme}/storm.png",
-    96: f"{theme}/storm.png",
-    99: f"{theme}/storm.png",
+    0: "sun.png",
+    1: "sun.png",
+    2: "partly_cloudy.png",
+    3: "cloud.png",
+    45: "fog.png",
+    48: "fog.png",
+    51: "rain.png",
+    53: "rain.png",
+    55: "rain.png",
+    56: "rain.png",
+    57: "rain.png",
+    61: "rain.png",
+    63: "rain.png",
+    65: "rain.png",
+    66: "rain.png",
+    67: "rain.png",
+    71: "snow.png",
+    73: "snow.png",
+    75: "snow.png",
+    77: "snow.png",
+    80: "rain.png",
+    81: "rain.png",
+    82: "rain.png",
+    85: "snow.png",
+    86: "snow.png",
+    95: "storm.png",
+    96: "storm.png",
+    99: "storm.png",
 }
 
 
@@ -48,10 +51,12 @@ def get_co2_category(co2_val):
         return "N/A"
     if co2_val < 1000:
         return "Good"
-    elif co2_val < 1500:
+    if co2_val < 1500:
         return "Moderate"
-    else:
-        return "Unhealthy"
+    return "Unhealthy"
+
+
+# --- Text Alignment Helpers ---
 
 
 def center_text(draw, text, font, x_start, x_end, y_pos):
@@ -69,13 +74,18 @@ def draw_right_text(draw, text, font, width, x_pad, y_pos):
     draw.text((width - text_w - x_pad, y_pos), text, font=font, fill=0)
 
 
+# --- Main Render Pipeline ---
+
+
 def create_display_image(width, height, data, font_path=None):
+    """
+    Builds the UI layer by layer onto a purely 1-bit (White=255, Black=0) canvas.
+    """
     image = Image.new("1", (width, height), 255)
     draw = ImageDraw.Draw(image)
 
-    # --- FONT LOADING WITH PI OS FALLBACKS ---
+    # Attempt to load fonts. Falls back to default Pi OS fonts if a custom one isn't provided.
     font_huge = font_lg = font_md = font_sm = font_xs = None
-
     paths_to_try = [
         font_path,
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -95,28 +105,27 @@ def create_display_image(width, height, data, font_path=None):
                 logger.warning(f"Failed to load font {path}: {e}")
 
     if font_huge is None:
-        logger.error("All TrueType fonts failed. Falling back to default.")
+        logger.error("All TrueType fonts failed. Falling back to default blocky font.")
         font_huge = font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
-    # --- Y-COORDINATE GRID ---
-    Y_LINE_1 = 30
-    Y_LINE_2 = 92
-    Y_LINE_3 = 122
+    # Layout Grid (Horizontal Dividers)
+    Y_LINE_1, Y_LINE_2, Y_LINE_3 = 30, 92, 122
     EDGE_PAD = 12
 
-    # --- 1. HEADER ---
+    # --- 1. HEADER (Time & Date) ---
     now = datetime.now()
     draw_left_text(draw, now.strftime("%H:%M"), font_sm, EDGE_PAD, 5)
     center_text(draw, now.strftime("%A"), font_sm, 0, width, 5)
     draw_right_text(draw, now.strftime("%d/%m/%Y"), font_sm, width, EDGE_PAD, 5)
     draw.line((0, Y_LINE_1, width, Y_LINE_1), fill=0, width=1)
 
-    # --- 2. AQI & CO2 ---
-    aqi_raw = data.get("aqi")
-    co2_raw = data.get("co2")
-
-    aqi_val = int(aqi_raw) if isinstance(aqi_raw, (int, float)) else "--"
-    co2_val = int(co2_raw) if isinstance(co2_raw, (int, float)) else "--"
+    # --- 2. SENSOR DATA (AQI & CO2) ---
+    aqi_val = (
+        int(data.get("aqi")) if isinstance(data.get("aqi"), (int, float)) else "--"
+    )
+    co2_val = (
+        int(data.get("co2")) if isinstance(data.get("co2"), (int, float)) else "--"
+    )
 
     draw_left_text(draw, f"AQI: {aqi_val}", font_huge, EDGE_PAD, Y_LINE_1 + 2)
     draw_left_text(draw, data.get("aqi_cat", "N/A"), font_md, EDGE_PAD, Y_LINE_1 + 38)
@@ -128,27 +137,19 @@ def create_display_image(width, height, data, font_path=None):
 
     draw.line((0, Y_LINE_2, width, Y_LINE_2), fill=0, width=1)
 
-    # --- 3. TEMP & HUMID ---
-    temp_raw = data.get("temp")
-    humid_raw = data.get("humid")
-
-    temp_str = (
-        f"Temp: {temp_raw:.1f}°"
-        if isinstance(temp_raw, (int, float))
-        else "Temp: --.-°"
-    )
+    # --- 3. SENSOR DATA (Temp & Humidity) ---
+    temp = data.get("temp")
+    humid = data.get("humid")
+    temp_str = f"Temp: {temp:.1f}°" if isinstance(temp, (int, float)) else "Temp: --.-°"
     humid_str = (
-        f"Humid: {humid_raw:.1f} %"
-        if isinstance(humid_raw, (int, float))
-        else "Humid: --.- %"
+        f"Humid: {humid:.1f} %" if isinstance(humid, (int, float)) else "Humid: --.- %"
     )
 
     draw_left_text(draw, temp_str, font_lg, EDGE_PAD, Y_LINE_2 + 2)
     draw_right_text(draw, humid_str, font_lg, width, EDGE_PAD, Y_LINE_2 + 2)
-
     draw.line((0, Y_LINE_3, width, Y_LINE_3), fill=0, width=1)
 
-    # --- 4. WEATHER FORECAST (HOURLY BLOCKS) ---
+    # --- 4. WEATHER FORECAST (Hourly Blocks) ---
     col_w = width // 3
     draw.line((col_w, Y_LINE_3, col_w, height), fill=0, width=1)
     draw.line((col_w * 2, Y_LINE_3, col_w * 2, height), fill=0, width=1)
@@ -156,44 +157,47 @@ def create_display_image(width, height, data, font_path=None):
     icon_size = 70
 
     for i in range(3):
-        col_start, col_end = i * col_w, (i + 1) * col_w
+        col_start = i * col_w
+        col_end = (i + 1) * col_w
+        icon_x = col_start + (col_w - icon_size) // 2
+        icon_y = Y_LINE_3 + 18
 
-        # Shifted down slightly to make room for the Time string at the top
-        icon_x, icon_y = col_start + (col_w - icon_size) // 2, Y_LINE_3 + 18
-
-        # Safely extract data from the new dictionary structure (Keys 1, 2, 3)
-        block_key = i + 1
-        # Check both int and str to be safe against JSON serialization quirks
-        block_data = data.get(block_key) or data.get(str(block_key))
+        # Safely extract data. JSON parses integer dict keys as strings, so check both.
+        block_data = data.get(i + 1) or data.get(str(i + 1))
 
         if block_data and len(block_data) == 5:
             time_str, t_max, t_min, precip, wmo_code = block_data
         else:
             time_str, t_max, t_min, precip, wmo_code = "---", None, None, None, None
 
-        # 1. Draw Time Period (e.g., "09:00-13:00") at the top
+        # Draw Time Period
         center_text(draw, time_str, font_xs, col_start, col_end, Y_LINE_3 + 2)
 
-        # 2. Draw Icon
+        # Process and Draw Weather Icon
         if wmo_code is not None:
-            icon_path = ACTIVE_ICON_MAP.get(wmo_code, f"{theme}/sun.png")
+            icon_file = ACTIVE_ICON_MAP.get(wmo_code, "sun.png")
+            icon_path = os.path.join(THEME_DIR, icon_file)
+
             try:
                 if os.path.exists(icon_path):
-                    img_icon = Image.open(icon_path).convert("RGBA")
-                    img_icon = img_icon.resize(
-                        (icon_size, icon_size), Image.Resampling.LANCZOS
+                    # Load icon, convert transparent backgrounds to pure white, then map grayscale to 1-bit
+                    img_icon = (
+                        Image.open(icon_path)
+                        .convert("RGBA")
+                        .resize((icon_size, icon_size), Image.Resampling.LANCZOS)
                     )
-                    bg_square = Image.new(
-                        "RGBA", (icon_size, icon_size), (255, 255, 255, 255)
-                    )
-                    combined = Image.alpha_composite(bg_square, img_icon)
+                    bg = Image.new("RGBA", (icon_size, icon_size), (255, 255, 255, 255))
+
+                    # Point(< 140) sets a threshold to avoid fuzzy dithering dots on the e-paper screen
                     final_icon = (
-                        combined.convert("L")
+                        Image.alpha_composite(bg, img_icon)
+                        .convert("L")
                         .point(lambda p: 0 if p < 140 else 255)
                         .convert("1")
                     )
                     image.paste(final_icon, (int(icon_x), int(icon_y)))
                 else:
+                    # Missing icon placeholder
                     draw.rectangle(
                         [icon_x, icon_y, icon_x + icon_size, icon_y + icon_size],
                         outline=0,
@@ -213,17 +217,17 @@ def create_display_image(width, height, data, font_path=None):
                 icon_y + (icon_size // 2) - 8,
             )
 
-        # 3. Draw Max/Min Temp
-        if t_max is not None and t_min is not None:
-            temp_text = f"{t_max:.1f}/{t_min:.1f}"
-        else:
-            temp_text = "--/--"
-
+        # Draw Min/Max Temps
+        temp_text = (
+            f"{t_max:.1f}/{t_min:.1f}"
+            if (t_max is not None and t_min is not None)
+            else "--/--"
+        )
         center_text(
             draw, temp_text, font_md, col_start, col_end, icon_y + icon_size - 4
         )
 
-        # 4. Draw Rain Probability
+        # Draw Rain %
         rain_text = f"Rain:{precip}%" if precip is not None else "Rain:--%"
         center_text(
             draw, rain_text, font_xs, col_start, col_end, icon_y + icon_size + 15

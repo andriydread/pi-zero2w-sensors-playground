@@ -6,3 +6,4 @@ adafruit-blinka
 adafruit-circuitpython-htu21d
 adafruit-circuitpython-scd4x
 requests
+python-dotenv
