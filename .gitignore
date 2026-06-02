@@ -1,5 +1,6 @@
 .venv/
 GEMINI.md
-to-do.txt
+sps30.txt
+
 *.log
 *.pyc

@@ -18,7 +18,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # Custom Drivers & Utils
-from lib.sps30 import SPS30_UART
+from lib.sps30_uart import SPS30_UART
 from lib.uc8253c import UC8253C_SPI
 from utils.aqi import calculate_aqi, get_aqi_category
 from utils.display_1day import create_display_image
