@@ -7,14 +7,14 @@ import adafruit_bus_device.i2c_device as i2c_device
 class SPS30:
     # Dictionary keys for the measurements returned by the read() method
     FIELD_NAMES = (
-        "pm10",
-        "pm25",
-        "pm40",
+        "pm10",  # Mass concentration (µg/m3)
+        "pm25",  # Mass concentration (µg/m3)
+        "pm40",  # Mass concentration (µg/m3)
         "pm100",  # Mass concentration (µg/m3)
-        "nc05",
-        "nc10",
-        "nc25",
-        "nc40",
+        "nc05",  # Number concentration (#/cm3)
+        "nc10",  # Number concentration (#/cm3)
+        "nc25",  # Number concentration (#/cm3)
+        "nc40",  # Number concentration (#/cm3)
         "nc100",  # Number concentration (#/cm3)
         "tps",  # Typical Particle Size (µm)
     )
@@ -44,8 +44,17 @@ class SPS30:
 
         # Bring sensor to life
         self.wakeup()
-        self.start(fp_mode)
+        self.start_measurement(fp_mode)
         self.firmware = self.read_firmware()
+
+    def __enter__(self):
+        """Enable context manager support."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Safely shut down the laser and fan if the script exits or crashes."""
+        self.stop_measurement()
+        self.sleep()
 
     def _crc8(self, buffer, start, end):
         """
@@ -100,7 +109,7 @@ class SPS30:
 
     def start_measurement(self, fp_mode=True):
         """Turn on the laser and fan. Required to get data."""
-        self.stop()  # Sensor requires a stop before a new start mode
+        self.stop_measurement()  # Sensor requires a stop before a new start mode
         fmt = 0x0300 if fp_mode else 0x0500
         self._command(self._CMD_START, arguments=(fmt,))
         self._set_mode(fp_mode)
@@ -125,8 +134,15 @@ class SPS30:
         try:
             self._command(self._CMD_WAKEUP)
         except OSError:
-            pass  # First wakeup usually fails as I2C bus NACKs
-        self._command(self._CMD_WAKEUP)
+            pass  # Expected NACK on the first attempt
+
+        time.sleep(0.01)  # CRITICAL: Wait 5ms for the sensor to boot up
+
+        try:
+            self._command(self._CMD_WAKEUP)
+        except OSError:
+            pass  # If it NACKs again, ignore it and let start_measurement handle it
+
         time.sleep(0.01)
 
     def force_clean(self):
@@ -158,7 +174,7 @@ class SPS30:
         )
 
     @property
-    def data_available(self):
+    def data_ready(self):
         """Check if the sensor has a fresh measurement ready."""
         self._command(self._CMD_READY, rx_size=3)
         return self._buffer[1] == 0x01
@@ -166,6 +182,8 @@ class SPS30:
     def read_firmware(self):
         """Get the hardware firmware version as a tuple (Major, Minor)."""
         self._command(self._CMD_VERSION, rx_size=3)
+        if self._buffer[2] != self._crc8(self._buffer, 0, 2):
+            raise RuntimeError("SPS30 Firmware CRC mismatch")
         return (self._buffer[0], self._buffer[1])
 
     def read(self):

@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 import time
 from datetime import datetime
@@ -13,7 +12,6 @@ import board
 import busio
 import requests
 from adafruit_htu21d import HTU21D
-from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -21,26 +19,22 @@ from urllib3.util.retry import Retry
 from lib.sps30_uart import SPS30_UART
 from lib.uc8253c import UC8253C_SPI
 from utils.aqi import calculate_aqi, get_aqi_category
-from utils.display_1day import create_display_image
-from utils.weather_1day import get_weather_forecast
-
-# Load environment variables (.env)
-load_dotenv()
+from utils.display import create_display_image
+from utils.weather import get_weather_forecast
 
 # --- SYSTEM CONFIGURATION ---
-DISPLAY_UPDATE_INTERVAL = int(os.getenv("DISPLAY_UPDATE_INTERVAL"))
-WEATHER_UPDATE_INTERVAL = int(os.getenv("WEATHER_UPDATE_INTERVAL"))
+DISPLAY_UPDATE_INTERVAL = 60
+WEATHER_UPDATE_INTERVAL = 1800
 SAMPLE_INTERVAL = 10  # Seconds between physical sensor reads
 
 FONT_PATH = "fonts/dejavu-sans-bold.ttf"
 
-
-WEATHER_LAT = float(os.getenv("WEATHER_LAT"))
-WEATHER_LON = float(os.getenv("WEATHER_LON"))
+WEATHER_LAT = 49.842957
+WEATHER_LON = 24.031111
 
 # API Setup
-ENABLE_API_UPLOAD = os.getenv("ENABLE_API_UPLOAD").lower() == "true"
-API_ENDPOINT = os.getenv("API_ENDPOINT")
+ENABLE_API_UPLOAD = False
+API_ENDPOINT = "http://your-server-ip:port/api/air-quality"
 API_TIMEOUT = 5.0
 
 # --- LOGGING SETUP ---

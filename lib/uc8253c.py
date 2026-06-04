@@ -1,12 +1,6 @@
 """
 UC8253C E-Paper Display Driver
 Controls the WeAct 3.7" E-Paper display via 4-wire SPI.
-
-Hardware Notes:
-- DC Pin: Drives LOW for Commands, HIGH for Data.
-- Busy Pin: Driven LOW by the display hardware while physically moving ink.
-- Memory: Uses a dual-bank "Ping-Pong" buffer (Bank 1 / Bank 2) to calculate
-  differential updates for fast/partial screen refreshes.
 """
 
 import logging
