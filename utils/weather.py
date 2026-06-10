@@ -6,8 +6,7 @@ def get_weather_forecast(
 ) -> dict:
     """
     Fetches today's hourly weather forecast.
-    Aggregates data into 3 fixed daily blocks to fit on the e-paper display:
-    Morning/Noon (09-13), Afternoon (14-19), Night (20-24).
+    Aggregates data into 3 fixed daily blocks.
     """
     url = (
         f"https://api.open-meteo.com/v1/forecast"
@@ -47,7 +46,7 @@ def get_weather_forecast(
             precip_slice = safe_slice("precipitation_probability", start_h, end_h)
 
             # WMO codes generally increase in severity (0=Clear, 95=Storm).
-            # max() is a fast heuristic to find the "worst" weather in this time block.
+            # max() is a fast way to find the "worst" weather in this time block.
             block_code = max(wmo_slice) if wmo_slice else None
             block_t_max = round(max(temp_slice), 1) if temp_slice else None
             block_t_min = round(min(temp_slice), 1) if temp_slice else None

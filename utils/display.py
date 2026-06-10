@@ -106,9 +106,13 @@ def create_display_image(width, height, data, font_path=None):
 
     co2_val = int(data.get("co2")) if isinstance(data.get("co2"), (int)) else "--"
 
-    temp = float(data.get("temp")) if isinstance(data.get("temp"), (float)) else "---"
+    temp = (
+        float(data.get("temp")) if isinstance(data.get("temp"), (int, float)) else "---"
+    )
     humid = (
-        float(data.get("humid")) if isinstance(data.get("humid"), (float)) else "---"
+        float(data.get("humid"))
+        if isinstance(data.get("humid"), (int, float))
+        else "---"
     )
 
     # Layout Grid (Horizontal Dividers)

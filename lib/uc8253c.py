@@ -3,13 +3,10 @@ UC8253C E-Paper Display Driver
 Controls the WeAct 3.7" E-Paper display via 4-wire SPI.
 """
 
-import logging
 import time
 
 import RPi.GPIO as GPIO
 import spidev
-
-logger = logging.getLogger("AirStation.UC8253C")
 
 
 class UC8253C_SPI:
@@ -63,7 +60,7 @@ class UC8253C_SPI:
             self._init_gpio()
             self._init_spi(spi_bus, spi_device)
         except Exception as e:
-            logger.error(f"E-Paper hardware init failed: {e}")
+            print(f"E-Paper hardware init failed: {e}")
             self.close()
 
     def __enter__(self):
@@ -93,7 +90,7 @@ class UC8253C_SPI:
             GPIO.setup(self.rst_pin, GPIO.OUT)
             GPIO.setup(self.dc_pin, GPIO.OUT)
         except RuntimeError as e:
-            logger.critical(
+            print(
                 "GPIO Init Failed. On Pi OS 64-bit Bookworm, run: pip install rpi-lgpio"
             )
             raise e
@@ -116,7 +113,7 @@ class UC8253C_SPI:
                     # writebytes2 is highly optimized for large C-level bytearrays
                     self.spi.writebytes2(data)
         except Exception as e:
-            logger.error(f"E-Paper SPI write failed: {e}")
+            print(f"E-Paper SPI write failed: {e}")
 
     def _wait_busy(self, timeout_secs=5):
         """Blocks execution until the E-Paper finishes physical ink manipulation."""
@@ -127,12 +124,10 @@ class UC8253C_SPI:
             while GPIO.input(self.busy_pin) == 0:
                 time.sleep(0.01)
                 if (time.time() - start) > timeout_secs:
-                    logger.error(
-                        "E-Paper busy timeout. Screen may be stuck or disconnected."
-                    )
+                    print("E-Paper busy timeout. Screen may be stuck or disconnected.")
                     return False
         except Exception as e:
-            logger.error(f"Failed to read busy pin: {e}")
+            print(f"Failed to read busy pin: {e}")
             return False
 
         time.sleep(0.02)
@@ -149,7 +144,7 @@ class UC8253C_SPI:
             self._is_swapped = False
             self.is_sleeping = False
         except Exception as e:
-            logger.error(f"E-Paper hardware reset failed: {e}")
+            print(f"E-Paper hardware reset failed: {e}")
 
     def _wake_up(self):
         """Wakes controller from deep sleep and pushes factory init registers."""
@@ -232,7 +227,7 @@ class UC8253C_SPI:
         display controller can calculate the difference between the old and new image.
         """
         if image.width != self.width or image.height != self.height:
-            logger.error(
+            print(
                 f"Image dimension mismatch. Expected {self.width}x{self.height}, got {image.width}x{image.height}"
             )
             return False
@@ -248,7 +243,7 @@ class UC8253C_SPI:
                 image = image.rotate(self.rotation, expand=True)
             current_buffer = bytearray(image.convert("1").tobytes())
         except Exception as e:
-            logger.error(f"Failed to process image data: {e}")
+            print(f"Failed to process image data: {e}")
             return False
 
         cmd_old = self._CMD_DATA_START_2 if self._is_swapped else self._CMD_DATA_START_1
@@ -284,7 +279,7 @@ class UC8253C_SPI:
             self._write(self._CMD_DEEP_SLEEP, 0xA5)
             self.is_sleeping = True
         except Exception as e:
-            logger.error(f"Failed to put display to sleep: {e}")
+            print(f"Failed to put display to sleep: {e}")
 
     def close(self):
         """Safely shuts down hardware interfaces."""
@@ -292,13 +287,13 @@ class UC8253C_SPI:
             if hasattr(self, "is_sleeping") and not self.is_sleeping:
                 self.sleep()
         except Exception as e:
-            logger.error(f"Error putting display to sleep during close: {e}")
+            print(f"Error putting display to sleep during close: {e}")
 
         try:
             if getattr(self, "spi", None) is not None:
                 self.spi.close()
         except Exception as e:
-            logger.error(f"Error closing SPI during cleanup: {e}")
+            print(f"Error closing SPI during cleanup: {e}")
 
         try:
             if all(hasattr(self, attr) for attr in ("rst_pin", "dc_pin", "busy_pin")):

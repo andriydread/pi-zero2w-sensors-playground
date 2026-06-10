@@ -1,9 +1,3 @@
-"""
-AQI Calculation Utility
-Converts raw PM2.5 and PM10 mass concentrations (µg/m³) into the US EPA Air Quality Index.
-"""
-
-
 def calculate_aqi(pm25: float, pm10: float) -> int:
     """
     Calculates the US EPA AQI for both PM2.5 and PM10.
@@ -60,7 +54,7 @@ def calculate_aqi(pm25: float, pm10: float) -> int:
 
 
 def get_aqi_category(aqi: int) -> str:
-    """Translates the numerical AQI into standard health risk categories."""
+    """Translates the numerical AQI into health risk categories."""
     if aqi <= 50:
         return "Good"
     if aqi <= 100:
@@ -73,6 +67,7 @@ def get_aqi_category(aqi: int) -> str:
 
 
 def get_co2_category(co2_val):
+    """Translates the numerical CO2 into health risk categories."""
     if not isinstance(co2_val, (int, float)):
         return "N/A"
     if co2_val < 1000:

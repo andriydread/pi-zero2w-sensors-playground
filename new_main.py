@@ -1,9 +1,11 @@
+import sys
 import time
 from datetime import datetime
 
 import adafruit_scd4x
 import board
 import busio
+import requests
 from adafruit_htu21d import HTU21D
 
 from lib.sps30_i2c import SPS30
@@ -40,6 +42,8 @@ class AirMonitor:
 
         self.refresh_count = 0
 
+        self.req_session = requests.Session()
+
         self.raw_data = {
             "co2": [],  # 0
             "temp": [],  # 0.0
@@ -67,7 +71,7 @@ class AirMonitor:
             self.htu = HTU21D(self.i2c)
             print("HTU21D Setup Complete.")
 
-            # SPS30 (PM - UART)
+            # SPS30 (PM - I2C)
             self.sps = SPS30(self.i2c)
             self.sps.start_measurement()
             print("SPS30 Setup Complete.")
@@ -98,7 +102,7 @@ class AirMonitor:
         """
 
         print("Fetching weather forecast.")
-        new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON)
+        new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON, self.req_session)
         print(type(new_weather))
         print(new_weather)
         if new_weather:
@@ -114,6 +118,7 @@ class AirMonitor:
         try:
             if self.scd4x and self.scd4x.data_ready:
                 self.raw_data["co2"].append(self.scd4x.CO2)
+                print("CO2", self.scd4x.CO2)
         except Exception as e:
             print(f"SCD41 read failed: {e}")
 
@@ -122,6 +127,8 @@ class AirMonitor:
             if self.htu:
                 self.raw_data["temp"].append(self.htu.temperature)
                 self.raw_data["humid"].append(self.htu.relative_humidity)
+                print("T", self.htu.temperature)
+                print("H", self.htu.relative_humidity)
         except Exception as e:
             print(f"HTU21D read failed: {e}")
 
@@ -134,6 +141,8 @@ class AirMonitor:
                 self.raw_data["pm4"].append(data["pm40"])
                 self.raw_data["pm10"].append(data["pm100"])
                 self.raw_data["tps"].append(data["tps"])
+                print("2.5", data["pm25"])
+                print("TPS", data["tps"])
         except Exception as e:
             print(f"SPS30 read failed: {e}")
 
@@ -191,7 +200,10 @@ class AirMonitor:
             print(f"Error during hardware shutdown: {e}")
 
     def main(self):
-        self.setup_sensors()
+        if not self.setup_sensors():
+            print("CRITICAL: Hardware setup failed. Exiting.")
+            sys.exit(1)
+
         print("Starting Main Loop.")
         try:
             while True:
