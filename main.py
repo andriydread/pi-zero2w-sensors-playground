@@ -194,8 +194,8 @@ class AirQualityStation:
             self.raw_data[key] = []
 
         # Safely calculate AQI (requires valid PM2.5 and PM10)
-        if isinstance(final_data.get("pm25"), (int, float)) and isinstance(
-            final_data.get("pm10"), (int, float)
+        if isinstance(final_data.get("pm25"), (float)) and isinstance(
+            final_data.get("pm10"), (float)
         ):
             final_data["aqi"] = calculate_aqi(final_data["pm25"], final_data["pm10"])
             final_data["aqi_cat"] = get_aqi_category(final_data["aqi"])
@@ -255,14 +255,14 @@ class AirQualityStation:
 
                 now = time.monotonic()
 
-                # 2. Check if it's time to fetch weather (30 mins)
+                # 2. Check if it's time to fetch weather
                 if (
                     now - self.last_weather_update
                 ) >= WEATHER_UPDATE_INTERVAL or self.last_weather_update == 0:
                     self.process_weather_update()
                     self.last_weather_update = now
 
-                # 3. Check if it's time to process data & refresh screen (5 mins)
+                # 3. Check if it's time to process data & refresh screen
                 if (
                     now - self.last_display_update
                 ) >= DISPLAY_UPDATE_INTERVAL or self.last_display_update == 0:

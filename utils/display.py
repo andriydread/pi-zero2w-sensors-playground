@@ -3,13 +3,12 @@ Display Renderer Utility
 Generates the 1-bit Black/White Image to be pushed to the E-Paper display.
 """
 
-import logging
 import os
 from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
-logger = logging.getLogger("AirStation.Display")
+from utils.aqi import calculate_aqi, get_aqi_category, get_co2_category
 
 # Location of icon PNGs
 THEME_DIR = "icons"
@@ -44,17 +43,6 @@ ACTIVE_ICON_MAP = {
     96: "storm.png",
     99: "storm.png",
 }
-
-
-def get_co2_category(co2_val):
-    if not isinstance(co2_val, (int, float)):
-        return "N/A"
-    if co2_val < 1000:
-        return "Good"
-    if co2_val < 1500:
-        return "Moderate"
-    return "Unhealthy"
-
 
 # --- Text Alignment Helpers ---
 
@@ -102,16 +90,21 @@ def create_display_image(width, height, data, font_path=None):
                 font_xs = ImageFont.truetype(path, 14)
                 break
             except Exception as e:
-                logger.warning(f"Failed to load font {path}: {e}")
+                print(f"Failed to load font {path}: {e}")
 
     if font_huge is None:
-        logger.error("All TrueType fonts failed. Falling back to default blocky font.")
+        print("All TrueType fonts failed. Falling back to default blocky font.")
         font_huge = font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
     # Values
-    aqi_val = (
-        int(data.get("aqi")) if isinstance(data.get("aqi"), (int, float)) else "--"
-    )
+    aqi_val = calculate_aqi()
+    (int(data.get("aqi")) if isinstance(data.get("aqi"), (int, float)) else "--")
+    if isinstance(data.get("pm25"), (float)) and isinstance(data.get("pm10"), (float)):
+        aqi_val = calculate_aqi(data.get("pm25"), data.get("pm10"))
+        aqi_cat = get_aqi_category(aqi_val)
+    else:
+        aqi_val = None
+        aqi_cat = None
 
     co2_val = int(data.get("co2")) if isinstance(data.get("co2"), (int)) else "--"
 
@@ -134,7 +127,7 @@ def create_display_image(width, height, data, font_path=None):
     # --- 2. SENSOR DATA (AQI & CO2) ---
 
     draw_left_text(draw, f"AQI: {aqi_val}", font_huge, EDGE_PAD, Y_LINE_1 + 2)
-    draw_left_text(draw, data.get("aqi_cat", "N/A"), font_md, EDGE_PAD, Y_LINE_1 + 38)
+    draw_left_text(draw, f"{aqi_cat}", font_md, EDGE_PAD, Y_LINE_1 + 38)
 
     draw_right_text(draw, f"CO2: {co2_val}", font_huge, width, EDGE_PAD, Y_LINE_1 + 2)
     draw_right_text(
@@ -206,7 +199,7 @@ def create_display_image(width, height, data, font_path=None):
                         outline=0,
                     )
             except Exception as e:
-                logger.warning(f"Error drawing icon {icon_path}: {e}")
+                print(f"Error drawing icon {icon_path}: {e}")
         else:
             draw.rectangle(
                 [icon_x, icon_y, icon_x + icon_size, icon_y + icon_size], outline=0

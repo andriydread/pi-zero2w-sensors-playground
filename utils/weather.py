@@ -1,13 +1,4 @@
-"""
-Weather Fetcher Utility
-Connects to Open-Meteo API to retrieve today's forecast and groups it into 3 time blocks.
-"""
-
-import logging
-
 import requests
-
-logger = logging.getLogger("AirStation.Weather")
 
 
 def get_weather_forecast(
@@ -40,9 +31,9 @@ def get_weather_forecast(
 
         # 3 fixed blocks: (start_hour, end_hour_inclusive, Display_String)
         blocks = [
-            (9, 13, "09:00-13:00"),
-            (14, 19, "14:00-19:00"),
-            (20, 23, "20:00-24:00"),
+            (9, 12, "09:00-12:00"),
+            (13, 17, "13:00-17:00"),
+            (18, 22, "18:00-22:00"),
         ]
 
         def safe_slice(key, start, end):
@@ -74,5 +65,5 @@ def get_weather_forecast(
         return weather_dict
 
     except Exception as e:
-        logger.error(f"Weather fetch failed: {e}")
+        print(f"Weather fetch failed: {e}")
         return {}

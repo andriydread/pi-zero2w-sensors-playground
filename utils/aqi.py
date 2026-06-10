@@ -70,3 +70,13 @@ def get_aqi_category(aqi: int) -> str:
     if aqi <= 300:
         return "Very Unhealthy"
     return "Hazardous"
+
+
+def get_co2_category(co2_val):
+    if not isinstance(co2_val, (int, float)):
+        return "N/A"
+    if co2_val < 1000:
+        return "Good"
+    if co2_val < 1500:
+        return "Moderate"
+    return "Unhealthy"
