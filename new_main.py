@@ -6,7 +6,7 @@ import board
 import busio
 from adafruit_htu21d import HTU21D
 
-from lib.sps30_uart import SPS30_UART
+from lib.sps30_i2c import SPS30
 from lib.uc8253c import UC8253C_SPI
 from utils.display import create_display_image
 from utils.weather import get_weather_forecast
@@ -68,7 +68,7 @@ class AirMonitor:
             print("HTU21D Setup Complete.")
 
             # SPS30 (PM - UART)
-            self.sps = SPS30_UART(port="/dev/serial0", baud_rate=115200)
+            self.sps = SPS30(self.i2c)
             self.sps.start_measurement()
             print("SPS30 Setup Complete.")
 
