@@ -1,8 +1,6 @@
-import logging
 import sys
 import time
 from datetime import datetime
-from logging.handlers import TimedRotatingFileHandler
 from typing import Any, Dict
 
 import adafruit_scd4x
@@ -36,23 +34,6 @@ WEATHER_LON = 24.031111
 ENABLE_API_UPLOAD = False
 API_ENDPOINT = "http://your-server-ip:port/api/air-quality"
 API_TIMEOUT = 5.0
-
-# --- LOGGING SETUP ---
-logger = logging.getLogger("AirStation")
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-
-# Console Output
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-# Rotating File Output (Keeps 7 days of logs, rotates at midnight)
-file_handler = TimedRotatingFileHandler(
-    "airstation.log", when="midnight", interval=1, backupCount=7
-)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
 
 
 class AirQualityStation:
@@ -107,12 +88,10 @@ class AirQualityStation:
         """Waits until the beginning of the next minute before proceeding."""
         now = datetime.now()
         seconds_to_wait = 60 - now.second
-        logger.info(
-            f"Syncing to next minute start. Waiting for {seconds_to_wait} seconds..."
-        )
+        print(f"Syncing to next minute start. Waiting for {seconds_to_wait} seconds...")
         time.sleep(seconds_to_wait)
 
-        logger.info("Sync complete. Beginning main loop.")
+        print("Sync complete. Beginning main loop.")
 
     def setup_hardware(self):
         """Initializes all buses and sensors. Returns False if a critical failure occurs."""
@@ -124,45 +103,30 @@ class AirQualityStation:
             self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
             self.scd4x.start_periodic_measurement()
             time.sleep(5)  # Give 5 sec for SCD41 to collect first reading
-            logger.info("SCD41 Setup Complete.")
+            print("SCD41 Setup Complete.")
 
             # HTU21D (Temp/Humid - I2C)
             self.htu = HTU21D(self.i2c)
-            logger.info("HTU21D Setup Complete.")
+            print("HTU21D Setup Complete.")
 
             # SPS30 (PM - UART)
             self.sps = SPS30_UART(port="/dev/serial0", baud_rate=115200)
             self.sps.start_measurement()
-            logger.info("SPS30 Setup Complete.")
+            print("SPS30 Setup Complete.")
 
             # UC8253C (E-Paper - SPI)
             self.epd = UC8253C_SPI(rotation=90)
             self.epd.clear()
-            logger.info("E-Paper Display Setup Complete.")
+            print("E-Paper Display Setup Complete.")
 
             return True
 
         except Exception as e:
-            logger.critical(f"Hardware Setup Failed: {e}")
+            print(f"Hardware Setup Failed: {e}")
             return False
 
-    def _recover_scd41(self):
-        """
-        The SCD41 is sensitive to voltage drops and can freeze.
-        This sends a software restart command to get the internal heater running again.
-        """
-        logger.warning("Attempting SCD41 Auto-Recovery.")
-        try:
-            if self.scd4x:
-                self.scd4x.stop_periodic_measurement()
-                time.sleep(0.5)
-                self.scd4x.start_periodic_measurement()
-                logger.info("SCD41 Restart Command Sent.")
-        except Exception as e:
-            logger.error(f"SCD41 Recovery Failed: {e}")
-
     def process_weather_update(self):
-        logger.info("Fetching latest weather forecast.")
+        print("Fetching latest weather forecast.")
         new_weather = get_weather_forecast(
             WEATHER_LAT, WEATHER_LON, session=self.session
         )
@@ -180,7 +144,7 @@ class AirQualityStation:
             if self.scd4x and self.scd4x.data_ready:
                 self.raw_data["co2"].append(self.scd4x.CO2)
         except Exception as e:
-            logger.debug(f"SCD41 read failed: {e}")
+            print(f"SCD41 read failed: {e}")
 
         # 2. HTU21D
         try:
@@ -188,7 +152,7 @@ class AirQualityStation:
                 self.raw_data["temp"].append(self.htu.temperature)
                 self.raw_data["humid"].append(self.htu.relative_humidity)
         except Exception as e:
-            logger.debug(f"HTU21D read failed: {e}")
+            print(f"HTU21D read failed: {e}")
 
         # 3. SPS30
         try:
@@ -201,7 +165,7 @@ class AirQualityStation:
                     self.raw_data["pm10"].append(pm["pm10_0_mass"])
                     self.raw_data["tps"].append(pm["typical_particle_size"])
         except Exception as e:
-            logger.debug(f"SPS30 read failed: {e}")
+            print(f"SPS30 read failed: {e}")
 
     def process_display_update(self):
         """
@@ -247,7 +211,7 @@ class AirQualityStation:
 
         final_data.update(self.current_weather)
 
-        logger.info(
+        print(
             f"Refreshing Screen | AQI: {final_data['aqi']} | CO2: {final_data['co2']} | T: {final_data['temp']}"
         )
 
@@ -267,20 +231,20 @@ class AirQualityStation:
 
                 self.refresh_count += 1
         except Exception as e:
-            logger.error(f"E-Paper Render/SPI Error: {e}")
+            print(f"E-Paper Render/SPI Error: {e}")
 
     def post_to_server(self, payload: Dict[str, Any]):
         try:
             self.session.post(API_ENDPOINT, json=payload, timeout=API_TIMEOUT)
-            logger.info("API Upload successful.")
+            print("API Upload successful.")
         except Exception as e:
-            logger.warning(f"API Upload Failed: {e}")
+            print(f"API Upload Failed: {e}")
 
     def main(self):
         if not self.setup_hardware():
             sys.exit(1)
 
-        logger.info("Starting Main Event Loop.")
+        print("Starting Main Event Loop.")
 
         self._sync_to_minute_start()
 
@@ -311,28 +275,28 @@ class AirQualityStation:
                 time.sleep(sleep_time)
 
         except KeyboardInterrupt:
-            logger.info("Stopping manually via KeyboardInterrupt...")
+            print("Stopping manually via KeyboardInterrupt...")
         except Exception as e:
-            logger.critical(f"Unexpected fatal error in main loop: {e}")
+            print(f"Unexpected fatal error in main loop: {e}")
         finally:
             self.shutdown()
 
     def shutdown(self):
         """Safely powers down hardware components to prevent damage."""
-        logger.info("Initiating hardware shutdown...")
+        print("Initiating hardware shutdown...")
         try:
             if self.sps:
                 self.sps.stop_measurement()  # Spins down the fan and turns off the laser
                 self.sps.close()
-                logger.info("SPS30 safely closed.")
+                print("SPS30 safely closed.")
 
             if self.epd:
                 self.epd.sleep()  # Removes voltage from the e-ink capsules
                 self.epd.close()
-                logger.info("E-Paper display safely closed.")
+                print("E-Paper display safely closed.")
 
         except Exception as e:
-            logger.error(f"Error during hardware shutdown: {e}")
+            print(f"Error during hardware shutdown: {e}")
 
 
 if __name__ == "__main__":

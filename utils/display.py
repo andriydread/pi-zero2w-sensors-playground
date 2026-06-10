@@ -108,6 +108,18 @@ def create_display_image(width, height, data, font_path=None):
         logger.error("All TrueType fonts failed. Falling back to default blocky font.")
         font_huge = font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
+    # Values
+    aqi_val = (
+        int(data.get("aqi")) if isinstance(data.get("aqi"), (int, float)) else "--"
+    )
+
+    co2_val = int(data.get("co2")) if isinstance(data.get("co2"), (int)) else "--"
+
+    temp = float(data.get("temp")) if isinstance(data.get("temp"), (float)) else "---"
+    humid = (
+        float(data.get("humid")) if isinstance(data.get("humid"), (float)) else "---"
+    )
+
     # Layout Grid (Horizontal Dividers)
     Y_LINE_1, Y_LINE_2, Y_LINE_3 = 30, 92, 122
     EDGE_PAD = 12
@@ -120,12 +132,6 @@ def create_display_image(width, height, data, font_path=None):
     draw.line((0, Y_LINE_1, width, Y_LINE_1), fill=0, width=1)
 
     # --- 2. SENSOR DATA (AQI & CO2) ---
-    aqi_val = (
-        int(data.get("aqi")) if isinstance(data.get("aqi"), (int, float)) else "--"
-    )
-    co2_val = (
-        int(data.get("co2")) if isinstance(data.get("co2"), (int, float)) else "--"
-    )
 
     draw_left_text(draw, f"AQI: {aqi_val}", font_huge, EDGE_PAD, Y_LINE_1 + 2)
     draw_left_text(draw, data.get("aqi_cat", "N/A"), font_md, EDGE_PAD, Y_LINE_1 + 38)
@@ -138,12 +144,9 @@ def create_display_image(width, height, data, font_path=None):
     draw.line((0, Y_LINE_2, width, Y_LINE_2), fill=0, width=1)
 
     # --- 3. SENSOR DATA (Temp & Humidity) ---
-    temp = data.get("temp")
-    humid = data.get("humid")
-    temp_str = f"Temp: {temp:.1f}°" if isinstance(temp, (int, float)) else "Temp: --.-°"
-    humid_str = (
-        f"Humid: {humid:.1f} %" if isinstance(humid, (int, float)) else "Humid: --.- %"
-    )
+
+    temp_str = f"Temp: {temp:.1f}°"
+    humid_str = f"Humid: {humid:.1f} %"
 
     draw_left_text(draw, temp_str, font_lg, EDGE_PAD, Y_LINE_2 + 2)
     draw_right_text(draw, humid_str, font_lg, width, EDGE_PAD, Y_LINE_2 + 2)
