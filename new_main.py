@@ -99,6 +99,8 @@ class AirMonitor:
 
         print("Fetching weather forecast.")
         new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON)
+        print(type(new_weather))
+        print(new_weather)
         if new_weather:
             self.current_weather = new_weather
 
@@ -125,14 +127,13 @@ class AirMonitor:
 
         # 3. SPS30
         try:
-            if self.sps:
-                success, pm = self.sps.read_values()
-                if success:
-                    self.raw_data["pm1"].append(pm["pm1_0_mass"])
-                    self.raw_data["pm25"].append(pm["pm2_5_mass"])
-                    self.raw_data["pm4"].append(pm["pm4_0_mass"])
-                    self.raw_data["pm10"].append(pm["pm10_0_mass"])
-                    self.raw_data["tps"].append(pm["typical_particle_size"])
+            if self.sps.data_ready:
+                data = self.sps.read()
+                self.raw_data["pm1"].append(data["pm10"])
+                self.raw_data["pm25"].append(data["pm25"])
+                self.raw_data["pm4"].append(data["pm40"])
+                self.raw_data["pm10"].append(data["pm100"])
+                self.raw_data["tps"].append(data["tps"])
         except Exception as e:
             print(f"SPS30 read failed: {e}")
 
@@ -161,11 +162,14 @@ class AirMonitor:
 
             final_data["timestamp"] = datetime.now().isoformat()
 
+            final_data.update(self.current_weather)
+
         try:
             img = create_display_image(
                 self.epd.width, self.epd.height, final_data, FONT_PATH
             )
             self.epd.update(img)
+            print("Display updated.")
             self.refresh_count += 1
         except Exception as e:
             print(f"E-Paper Render/SPI Error: {e}")
@@ -176,7 +180,6 @@ class AirMonitor:
         try:
             if self.sps:
                 self.sps.stop_measurement()  # Spins down the fan and turns off the laser
-                self.sps.close()
                 print("SPS30 safely closed.")
 
             if self.epd:

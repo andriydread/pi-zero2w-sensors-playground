@@ -97,8 +97,6 @@ def create_display_image(width, height, data, font_path=None):
         font_huge = font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
     # Values
-    aqi_val = calculate_aqi()
-    (int(data.get("aqi")) if isinstance(data.get("aqi"), (int, float)) else "--")
     if isinstance(data.get("pm25"), (float)) and isinstance(data.get("pm10"), (float)):
         aqi_val = calculate_aqi(data.get("pm25"), data.get("pm10"))
         aqi_cat = get_aqi_category(aqi_val)
