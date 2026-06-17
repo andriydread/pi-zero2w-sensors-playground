@@ -14,4 +14,3 @@ adafruit-circuitpython-scd4x
 
 # Misc
 requests
-python-dotenv

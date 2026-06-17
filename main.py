@@ -1,28 +1,22 @@
 import sys
 import time
 from datetime import datetime
-from typing import Any, Dict
 
 import adafruit_scd4x
-
-# Hardware Libraries
 import board
 import busio
 import requests
 from adafruit_htu21d import HTU21D
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# Custom Drivers & Utils
-from lib.sps30_uart import SPS30_UART
+from lib.sps30_i2c import SPS30
 from lib.uc8253c import UC8253C_SPI
-from utils.aqi import calculate_aqi, get_aqi_category
 from utils.display import create_display_image
 from utils.weather import get_weather_forecast
 
-# --- SYSTEM CONFIGURATION ---
-DISPLAY_UPDATE_INTERVAL = 60
-WEATHER_UPDATE_INTERVAL = 1800
+# Config
+
+DISPLAY_UPDATE_INTERVAL = 60  # Seconds
+WEATHER_UPDATE_INTERVAL = 1800  # Seconds
 SAMPLE_INTERVAL = 10  # Seconds between physical sensor reads
 
 FONT_PATH = "fonts/dejavu-sans-bold.ttf"
@@ -30,13 +24,8 @@ FONT_PATH = "fonts/dejavu-sans-bold.ttf"
 WEATHER_LAT = 49.842957
 WEATHER_LON = 24.031111
 
-# API Setup
-ENABLE_API_UPLOAD = False
-API_ENDPOINT = "http://your-server-ip:port/api/air-quality"
-API_TIMEOUT = 5.0
 
-
-class AirQualityStation:
+class AirMonitor:
     def __init__(self):
         # Hardware Handles
         self.i2c = None
@@ -45,55 +34,28 @@ class AirQualityStation:
         self.htu = None
         self.epd = None
 
-        # Network Session (Shared across Weather and API Uploads)
-        self.session = self._setup_session()
-
         # Timers (Set to 0 so they trigger immediately on the first pass)
         self.last_display_update = 0
-        self.last_weather_update = 0
+        self.last_weather_fetch = 0
 
         self.current_weather = {}
 
         self.refresh_count = 0
 
+        self.req_session = requests.Session()
+
         self.raw_data = {
-            "co2": [],
-            "temp": [],
-            "humid": [],
-            "pm1": [],
-            "pm25": [],
-            "pm4": [],
-            "pm10": [],
-            "tps": [],
+            "co2": [],  # 0
+            "temp": [],  # 0.0
+            "humid": [],  # 0.0
+            "pm1": [],  # 0.00
+            "pm25": [],  # 0.00
+            "pm4": [],  # 0.00
+            "pm10": [],  # 0.00
+            "tps": [],  # 0.00
         }
 
-    def _setup_session(self):
-        """
-        Configures an HTTP session with built-in retries.
-        Crucial for Pi Zero W, where the WiFi chip occasionally drops packets.
-        """
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=2,  # Exponential backoff: 2s, 4s, 8s
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["POST", "GET"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        return session
-
-    def _sync_to_minute_start(self):
-        """Waits until the beginning of the next minute before proceeding."""
-        now = datetime.now()
-        seconds_to_wait = 60 - now.second
-        print(f"Syncing to next minute start. Waiting for {seconds_to_wait} seconds...")
-        time.sleep(seconds_to_wait)
-
-        print("Sync complete. Beginning main loop.")
-
-    def setup_hardware(self):
+    def setup_sensors(self):
         """Initializes all buses and sensors. Returns False if a critical failure occurs."""
         try:
             # I2C Bus
@@ -109,8 +71,8 @@ class AirQualityStation:
             self.htu = HTU21D(self.i2c)
             print("HTU21D Setup Complete.")
 
-            # SPS30 (PM - UART)
-            self.sps = SPS30_UART(port="/dev/serial0", baud_rate=115200)
+            # SPS30 (PM - I2C)
+            self.sps = SPS30(self.i2c)
             self.sps.start_measurement()
             print("SPS30 Setup Complete.")
 
@@ -125,24 +87,38 @@ class AirQualityStation:
             print(f"Hardware Setup Failed: {e}")
             return False
 
-    def process_weather_update(self):
-        print("Fetching latest weather forecast.")
-        new_weather = get_weather_forecast(
-            WEATHER_LAT, WEATHER_LON, session=self.session
-        )
+    def fetch_weather(self):
+        """
+        Fetches current weather from Open-Meteo.com and splits it into time segments
+
+        Return: dict
+        {
+            time_segment,
+            segment_t_max,
+            segment_t_min,
+            segment_precip,
+            segment_weather_code,
+        }
+        """
+
+        print("Fetching weather forecast.")
+        new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON, self.req_session)
+        print(type(new_weather))
+        print(new_weather)
         if new_weather:
             self.current_weather = new_weather
 
     def collect_raw_sample(self):
         """
-        Reads sensors independently. If one sensor fails, it logs to DEBUG
-        (to prevent log spam) but allows the other sensors to keep working.
+        Reads sensors every SAMPLE_INTERVAL and appends to raw_data dict
+
         """
 
         # 1. SCD41 (Updates internaly every 5s)
         try:
             if self.scd4x and self.scd4x.data_ready:
                 self.raw_data["co2"].append(self.scd4x.CO2)
+                print("CO2", self.scd4x.CO2)
         except Exception as e:
             print(f"SCD41 read failed: {e}")
 
@@ -151,27 +127,30 @@ class AirQualityStation:
             if self.htu:
                 self.raw_data["temp"].append(self.htu.temperature)
                 self.raw_data["humid"].append(self.htu.relative_humidity)
+                print("T", self.htu.temperature)
+                print("H", self.htu.relative_humidity)
         except Exception as e:
             print(f"HTU21D read failed: {e}")
 
         # 3. SPS30
         try:
-            if self.sps:
-                success, pm = self.sps.read_values()
-                if success:
-                    self.raw_data["pm1"].append(pm["pm1_0_mass"])
-                    self.raw_data["pm25"].append(pm["pm2_5_mass"])
-                    self.raw_data["pm4"].append(pm["pm4_0_mass"])
-                    self.raw_data["pm10"].append(pm["pm10_0_mass"])
-                    self.raw_data["tps"].append(pm["typical_particle_size"])
+            if self.sps.data_ready:
+                data = self.sps.read()
+                self.raw_data["pm1"].append(data["pm10"])
+                self.raw_data["pm25"].append(data["pm25"])
+                self.raw_data["pm4"].append(data["pm40"])
+                self.raw_data["pm10"].append(data["pm100"])
+                self.raw_data["tps"].append(data["tps"])
+                print("2.5", data["pm25"])
+                print("TPS", data["tps"])
         except Exception as e:
             print(f"SPS30 read failed: {e}")
 
-    def process_display_update(self):
+    def display_averages(self):
         """
-        Averages the raw data buffer, calculates AQI, pushes to API,
-        draws the UI, and sends it to the E-Paper.
+        Calculates averages based on raw_data, builds image with them and updates epd
         """
+
         final_data = {}
 
         # Average out the buffer
@@ -186,108 +165,30 @@ class AirQualityStation:
                     final_data[key] = round(val, 2)
             else:
                 final_data[key] = None
-                # If CO2 buffer is completely empty for 5 minutes, SCD41 is likely hung.
-                if key == "co2":
-                    self._recover_scd41()
 
-            # Clear buffer for the next time window
+            # Clear raw_data buffer for the next time window
             self.raw_data[key] = []
 
-        # Safely calculate AQI (requires valid PM2.5 and PM10)
-        if isinstance(final_data.get("pm25"), (float)) and isinstance(
-            final_data.get("pm10"), (float)
-        ):
-            final_data["aqi"] = calculate_aqi(final_data["pm25"], final_data["pm10"])
-            final_data["aqi_cat"] = get_aqi_category(final_data["aqi"])
-        else:
-            final_data["aqi"] = None
-            final_data["aqi_cat"] = None
+            final_data["timestamp"] = datetime.now().isoformat()
 
-        final_data["timestamp"] = datetime.now().isoformat()
+            final_data.update(self.current_weather)
 
-        # Networking
-        if ENABLE_API_UPLOAD:
-            self.post_to_server(final_data)
-
-        final_data.update(self.current_weather)
-
-        print(
-            f"Refreshing Screen | AQI: {final_data['aqi']} | CO2: {final_data['co2']} | T: {final_data['temp']}"
-        )
-
-        # Rendering
         try:
-            if self.epd:
-                # Every 10th minute (and first time), do a FULL refresh to clear ghosting
-                if self.refresh_count % 10 == 0:
-                    self.epd.set_full_refresh()
-                else:
-                    self.epd.set_partial_refresh()
-
-                img = create_display_image(
-                    self.epd.width, self.epd.height, final_data, FONT_PATH
-                )
-                self.epd.update(img)
-
-                self.refresh_count += 1
+            img = create_display_image(
+                self.epd.width, self.epd.height, final_data, FONT_PATH
+            )
+            self.epd.update(img)
+            print("Display updated.")
+            self.refresh_count += 1
         except Exception as e:
             print(f"E-Paper Render/SPI Error: {e}")
 
-    def post_to_server(self, payload: Dict[str, Any]):
-        try:
-            self.session.post(API_ENDPOINT, json=payload, timeout=API_TIMEOUT)
-            print("API Upload successful.")
-        except Exception as e:
-            print(f"API Upload Failed: {e}")
-
-    def main(self):
-        if not self.setup_hardware():
-            sys.exit(1)
-
-        print("Starting Main Event Loop.")
-
-        self._sync_to_minute_start()
-
-        try:
-            while True:
-                # 1. Grab fast sensor samples
-                self.collect_raw_sample()
-
-                now = time.monotonic()
-
-                # 2. Check if it's time to fetch weather
-                if (
-                    now - self.last_weather_update
-                ) >= WEATHER_UPDATE_INTERVAL or self.last_weather_update == 0:
-                    self.process_weather_update()
-                    self.last_weather_update = now
-
-                # 3. Check if it's time to process data & refresh screen
-                if (
-                    now - self.last_display_update
-                ) >= DISPLAY_UPDATE_INTERVAL or self.last_display_update == 0:
-                    self.process_display_update()
-                    self.last_display_update = now
-
-                # 4. Rest CPU and yield to OS (Dynamic sleep to prevent time drift)
-                loop_duration = time.monotonic() - now
-                sleep_time = max(0, SAMPLE_INTERVAL - loop_duration)
-                time.sleep(sleep_time)
-
-        except KeyboardInterrupt:
-            print("Stopping manually via KeyboardInterrupt...")
-        except Exception as e:
-            print(f"Unexpected fatal error in main loop: {e}")
-        finally:
-            self.shutdown()
-
     def shutdown(self):
-        """Safely powers down hardware components to prevent damage."""
-        print("Initiating hardware shutdown...")
+        """Safely powers down hardware components to prevent damage"""
+        print("Hardware shutdown.")
         try:
             if self.sps:
                 self.sps.stop_measurement()  # Spins down the fan and turns off the laser
-                self.sps.close()
                 print("SPS30 safely closed.")
 
             if self.epd:
@@ -298,7 +199,41 @@ class AirQualityStation:
         except Exception as e:
             print(f"Error during hardware shutdown: {e}")
 
+    def main(self):
+        if not self.setup_sensors():
+            print("CRITICAL: Hardware setup failed. Exiting.")
+            sys.exit(1)
+
+        print("Starting Main Loop.")
+        try:
+            while True:
+                self.collect_raw_sample()
+                now = time.monotonic()
+
+                if (
+                    now - self.last_weather_fetch
+                ) >= WEATHER_UPDATE_INTERVAL or self.last_weather_fetch == 0:
+                    self.fetch_weather()
+                    self.last_weather_fetch = now
+
+                if (
+                    now - self.last_display_update
+                ) >= DISPLAY_UPDATE_INTERVAL or self.last_display_update == 0:
+                    self.display_averages()
+                    self.last_display_update = now
+
+                loop_duration = time.monotonic() - now
+                sleep_time = max(0, SAMPLE_INTERVAL - loop_duration)
+                time.sleep(sleep_time)
+
+        except KeyboardInterrupt:
+            print("Stopping manually via KeyboardInterrupt.")
+        except Exception as e:
+            print(f"Unexpected fatal error in main loop: {e}")
+        finally:
+            self.shutdown()
+
 
 if __name__ == "__main__":
-    station = AirQualityStation()
-    station.main()
+    monitor = AirMonitor()
+    monitor.main()

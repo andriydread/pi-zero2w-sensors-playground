@@ -18,7 +18,6 @@ def get_weather_forecast(
     try:
         fetcher = session if session else requests
 
-        # Open-Meteo is free but requests a User-Agent to prevent IP bans
         headers = {"User-Agent": "AirStation/1.0 (RaspberryPi)"}
 
         response = fetcher.get(url, headers=headers, timeout=5.0)
