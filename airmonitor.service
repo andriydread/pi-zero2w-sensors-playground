@@ -3,13 +3,15 @@ Description=Air Quality Monitor Station
 After=network.target
 
 [Service]
-ExecStart=/home/pi/air_station/.venv/bin/python3 /home/pi/air_station/main.py
-WorkingDirectory=/home/pi/air_station
-StandardOutput=inherit
-StandardError=inherit
+ExecStart=/home/pi/air_test/.venv/bin/python3 /home/pi/air_test/main.py
+WorkingDirectory=/home/pi/air_test
+StandardOutput=journal
+StandardError=journal
 RestartSec=10
 Restart=always
 User=pi
+Environment=AIRMONITOR_PARTIAL_UPDATE_INTERVAL=60
+Environment=AIRMONITOR_FULL_UPDATE_INTERVAL=300
 
 [Install]
 WantedBy=multi-user.target

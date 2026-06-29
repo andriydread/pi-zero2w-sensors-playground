@@ -1,6 +1,11 @@
+import logging
+import os
+import signal
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Dict, List, Optional
 
 import adafruit_scd4x
 import board
@@ -8,232 +13,320 @@ import busio
 import requests
 from adafruit_htu21d import HTU21D
 
+try:
+    import adafruit_sht4x
+except ImportError:  # Optional dependency on systems that only use HTU21D.
+    adafruit_sht4x = None
+
 from lib.sps30_i2c import SPS30
 from lib.uc8253c import UC8253C_SPI
 from utils.display import create_display_image
 from utils.weather import get_weather_forecast
 
-# Config
 
-DISPLAY_UPDATE_INTERVAL = 60  # Seconds
-WEATHER_UPDATE_INTERVAL = 1800  # Seconds
-SAMPLE_INTERVAL = 10  # Seconds between physical sensor reads
-
-FONT_PATH = "fonts/dejavu-sans-bold.ttf"
-
-WEATHER_LAT = 49.842957
-WEATHER_LON = 24.031111
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOGGER = logging.getLogger("airmonitor")
 
 
-class AirMonitor:
-    def __init__(self):
-        # Hardware Handles
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return int(value)
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return float(value)
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    sample_interval_seconds: int = env_int("AIRMONITOR_SAMPLE_INTERVAL", 10)
+    partial_update_interval_seconds: int = env_int(
+        "AIRMONITOR_PARTIAL_UPDATE_INTERVAL", 60
+    )
+    full_update_interval_seconds: int = env_int(
+        "AIRMONITOR_FULL_UPDATE_INTERVAL", 300
+    )
+    weather_update_interval_seconds: int = env_int(
+        "AIRMONITOR_WEATHER_UPDATE_INTERVAL", 1800
+    )
+    font_path: str = os.getenv("AIRMONITOR_FONT_PATH", "fonts/dejavu-sans-bold.ttf")
+    weather_latitude: float = env_float("AIRMONITOR_WEATHER_LAT", 49.842957)
+    weather_longitude: float = env_float("AIRMONITOR_WEATHER_LON", 24.031111)
+    display_rotation: int = env_int("AIRMONITOR_DISPLAY_ROTATION", 90)
+
+    def validate(self) -> None:
+        if self.sample_interval_seconds <= 0:
+            raise ValueError("AIRMONITOR_SAMPLE_INTERVAL must be greater than 0")
+        if self.partial_update_interval_seconds <= 0:
+            raise ValueError(
+                "AIRMONITOR_PARTIAL_UPDATE_INTERVAL must be greater than 0"
+            )
+        if self.full_update_interval_seconds <= 0:
+            raise ValueError("AIRMONITOR_FULL_UPDATE_INTERVAL must be greater than 0")
+        if self.full_update_interval_seconds < self.partial_update_interval_seconds:
+            raise ValueError(
+                "AIRMONITOR_FULL_UPDATE_INTERVAL must be greater than or equal to AIRMONITOR_PARTIAL_UPDATE_INTERVAL"
+            )
+
+
+@dataclass
+class SampleBuffer:
+    values: Dict[str, List[float]] = field(
+        default_factory=lambda: {
+            "co2": [],
+            "temp": [],
+            "humid": [],
+            "pm1": [],
+            "pm25": [],
+            "pm4": [],
+            "pm10": [],
+            "tps": [],
+        }
+    )
+
+    def add(self, key: str, value: Optional[float]) -> None:
+        if value is None:
+            return
+        self.values[key].append(value)
+
+    def averaged_snapshot(self) -> Dict[str, Optional[float]]:
+        snapshot: Dict[str, Optional[float]] = {}
+
+        for key, samples in self.values.items():
+            if not samples:
+                snapshot[key] = None
+                continue
+
+            average = sum(samples) / len(samples)
+            if key == "co2":
+                snapshot[key] = int(round(average))
+            elif key in {"temp", "humid", "tps"}:
+                snapshot[key] = round(average, 1)
+            else:
+                snapshot[key] = round(average, 2)
+
+        self.clear()
+        snapshot["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        return snapshot
+
+    def clear(self) -> None:
+        for samples in self.values.values():
+            samples.clear()
+
+
+class AmbientSensor:
+    def __init__(self, device, name: str):
+        self.device = device
+        self.name = name
+
+    @property
+    def temperature(self) -> float:
+        return float(self.device.temperature)
+
+    @property
+    def relative_humidity(self) -> float:
+        return float(self.device.relative_humidity)
+
+
+class AirMonitorApp:
+    def __init__(self, config: AppConfig):
+        self.config = config
         self.i2c = None
         self.scd4x = None
-        self.sps = None
-        self.htu = None
-        self.epd = None
+        self.ambient_sensor: Optional[AmbientSensor] = None
+        self.sps30: Optional[SPS30] = None
+        self.display: Optional[UC8253C_SPI] = None
+        self.weather: Dict = {}
+        self.sample_buffer = SampleBuffer()
+        self.http = requests.Session()
+        self.http.headers.update({"User-Agent": "AirMonitor/1.0"})
+        self.running = True
 
-        # Timers (Set to 0 so they trigger immediately on the first pass)
-        self.last_display_update = 0
-        self.last_weather_fetch = 0
+    def setup(self) -> None:
+        LOGGER.info("Initializing I2C bus")
+        self.i2c = busio.I2C(board.SCL, board.SDA)
 
-        self.current_weather = {}
+        LOGGER.info("Initializing SCD41")
+        self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
+        self.scd4x.start_periodic_measurement()
 
-        self.refresh_count = 0
+        self.ambient_sensor = self._setup_ambient_sensor()
 
-        self.req_session = requests.Session()
+        LOGGER.info("Initializing SPS30")
+        self.sps30 = SPS30(self.i2c)
+        self.sps30.wakeup()
+        self.sps30.start_measurement()
 
-        self.raw_data = {
-            "co2": [],  # 0
-            "temp": [],  # 0.0
-            "humid": [],  # 0.0
-            "pm1": [],  # 0.00
-            "pm25": [],  # 0.00
-            "pm4": [],  # 0.00
-            "pm10": [],  # 0.00
-            "tps": [],  # 0.00
-        }
+        LOGGER.info("Initializing UC8253C display")
+        self.display = UC8253C_SPI(rotation=self.config.display_rotation)
+        self.display.clear()
 
-    def setup_sensors(self):
-        """Initializes all buses and sensors. Returns False if a critical failure occurs."""
-        try:
-            # I2C Bus
-            self.i2c = busio.I2C(board.SCL, board.SDA)
+        time.sleep(5)
 
-            # SCD41 (CO2 - I2C)
-            self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
-            self.scd4x.start_periodic_measurement()
-            time.sleep(5)  # Give 5 sec for SCD41 to collect first reading
-            print("SCD41 Setup Complete.")
+    def _setup_ambient_sensor(self) -> AmbientSensor:
+        if adafruit_sht4x is not None:
+            try:
+                device = adafruit_sht4x.SHT4x(self.i2c)
+                LOGGER.info("Using SHT41 for ambient temperature and humidity")
+                return AmbientSensor(device, "SHT41")
+            except Exception:
+                LOGGER.exception("SHT41 initialization failed, falling back to HTU21D")
 
-            # HTU21D (Temp/Humid - I2C)
-            self.htu = HTU21D(self.i2c)
-            print("HTU21D Setup Complete.")
+        LOGGER.info("Using HTU21D for ambient temperature and humidity")
+        return AmbientSensor(HTU21D(self.i2c), "HTU21D")
 
-            # SPS30 (PM - I2C)
-            self.sps = SPS30(self.i2c)
-            self.sps.start_measurement()
-            print("SPS30 Setup Complete.")
+    def install_signal_handlers(self) -> None:
+        signal.signal(signal.SIGTERM, self._handle_stop_signal)
+        signal.signal(signal.SIGINT, self._handle_stop_signal)
 
-            # UC8253C (E-Paper - SPI)
-            self.epd = UC8253C_SPI(rotation=90)
-            self.epd.clear()
-            print("E-Paper Display Setup Complete.")
+    def _handle_stop_signal(self, signum, _frame) -> None:
+        LOGGER.info("Received signal %s, stopping", signum)
+        self.running = False
 
-            return True
+    def fetch_weather(self) -> None:
+        LOGGER.info("Fetching weather forecast")
+        weather = get_weather_forecast(
+            self.config.weather_latitude,
+            self.config.weather_longitude,
+            self.http,
+        )
+        if weather:
+            self.weather = weather
+        else:
+            LOGGER.warning("Keeping previous weather data because forecast fetch failed")
 
-        except Exception as e:
-            print(f"Hardware Setup Failed: {e}")
-            return False
+    def collect_sample(self) -> None:
+        if self.scd4x is not None:
+            try:
+                if self.scd4x.data_ready:
+                    self.sample_buffer.add("co2", float(self.scd4x.CO2))
+            except Exception:
+                LOGGER.exception("Failed to read SCD41")
 
-    def fetch_weather(self):
-        """
-        Fetches current weather from Open-Meteo.com and splits it into time segments
+        if self.ambient_sensor is not None:
+            try:
+                self.sample_buffer.add("temp", self.ambient_sensor.temperature)
+                self.sample_buffer.add("humid", self.ambient_sensor.relative_humidity)
+            except Exception:
+                LOGGER.exception("Failed to read %s", self.ambient_sensor.name)
 
-        Return: dict
-        {
-            time_segment,
-            segment_t_max,
-            segment_t_min,
-            segment_precip,
-            segment_weather_code,
-        }
-        """
+        if self.sps30 is not None:
+            try:
+                if self.sps30.data_ready:
+                    data = self.sps30.read()
+                    self.sample_buffer.add("pm1", data["pm1"])
+                    self.sample_buffer.add("pm25", data["pm25"])
+                    self.sample_buffer.add("pm4", data["pm4"])
+                    self.sample_buffer.add("pm10", data["pm10"])
+                    self.sample_buffer.add("tps", data["tps"])
+            except Exception:
+                LOGGER.exception("Failed to read SPS30")
 
-        print("Fetching weather forecast.")
-        new_weather = get_weather_forecast(WEATHER_LAT, WEATHER_LON, self.req_session)
-        print(type(new_weather))
-        print(new_weather)
-        if new_weather:
-            self.current_weather = new_weather
+    def update_display(self, full_refresh: bool) -> None:
+        if self.display is None:
+            raise RuntimeError("Display is not initialized")
 
-    def collect_raw_sample(self):
-        """
-        Reads sensors every SAMPLE_INTERVAL and appends to raw_data dict
+        snapshot = self.sample_buffer.averaged_snapshot()
+        snapshot.update(self.weather)
 
-        """
+        image = create_display_image(
+            self.display.width,
+            self.display.height,
+            snapshot,
+            self.config.font_path,
+        )
 
-        # 1. SCD41 (Updates internaly every 5s)
-        try:
-            if self.scd4x and self.scd4x.data_ready:
-                self.raw_data["co2"].append(self.scd4x.CO2)
-                print("CO2", self.scd4x.CO2)
-        except Exception as e:
-            print(f"SCD41 read failed: {e}")
+        refresh_mode = (
+            UC8253C_SPI.MODE_FULL if full_refresh else UC8253C_SPI.MODE_PARTIAL
+        )
+        self.display.display_image(image, mode=refresh_mode)
+        LOGGER.info("Display updated with %s refresh", refresh_mode.lower())
 
-        # 2. HTU21D
-        try:
-            if self.htu:
-                self.raw_data["temp"].append(self.htu.temperature)
-                self.raw_data["humid"].append(self.htu.relative_humidity)
-                print("T", self.htu.temperature)
-                print("H", self.htu.relative_humidity)
-        except Exception as e:
-            print(f"HTU21D read failed: {e}")
+    def run(self) -> None:
+        self.config.validate()
+        self.install_signal_handlers()
+        self.setup()
 
-        # 3. SPS30
-        try:
-            if self.sps.data_ready:
-                data = self.sps.read()
-                self.raw_data["pm1"].append(data["pm10"])
-                self.raw_data["pm25"].append(data["pm25"])
-                self.raw_data["pm4"].append(data["pm40"])
-                self.raw_data["pm10"].append(data["pm100"])
-                self.raw_data["tps"].append(data["tps"])
-                print("2.5", data["pm25"])
-                print("TPS", data["tps"])
-        except Exception as e:
-            print(f"SPS30 read failed: {e}")
+        next_sample = time.monotonic()
+        next_partial = next_sample
+        next_full = next_sample
+        next_weather = next_sample
 
-    def display_averages(self):
-        """
-        Calculates averages based on raw_data, builds image with them and updates epd
-        """
-
-        final_data = {}
-
-        # Average out the buffer
-        for key, values in self.raw_data.items():
-            if values:
-                val = sum(values) / len(values)
-                if key == "co2":
-                    final_data[key] = int(val)
-                elif key in ["temp", "humid"]:
-                    final_data[key] = round(val, 1)
-                else:
-                    final_data[key] = round(val, 2)
-            else:
-                final_data[key] = None
-
-            # Clear raw_data buffer for the next time window
-            self.raw_data[key] = []
-
-            final_data["timestamp"] = datetime.now().isoformat()
-
-            final_data.update(self.current_weather)
+        LOGGER.info("Air monitor started")
 
         try:
-            img = create_display_image(
-                self.epd.width, self.epd.height, final_data, FONT_PATH
-            )
-            self.epd.update(img)
-            print("Display updated.")
-            self.refresh_count += 1
-        except Exception as e:
-            print(f"E-Paper Render/SPI Error: {e}")
-
-    def shutdown(self):
-        """Safely powers down hardware components to prevent damage"""
-        print("Hardware shutdown.")
-        try:
-            if self.sps:
-                self.sps.stop_measurement()  # Spins down the fan and turns off the laser
-                print("SPS30 safely closed.")
-
-            if self.epd:
-                self.epd.sleep()  # Removes voltage from the e-ink capsules
-                self.epd.close()
-                print("E-Paper display safely closed.")
-
-        except Exception as e:
-            print(f"Error during hardware shutdown: {e}")
-
-    def main(self):
-        if not self.setup_sensors():
-            print("CRITICAL: Hardware setup failed. Exiting.")
-            sys.exit(1)
-
-        print("Starting Main Loop.")
-        try:
-            while True:
-                self.collect_raw_sample()
+            while self.running:
                 now = time.monotonic()
 
-                if (
-                    now - self.last_weather_fetch
-                ) >= WEATHER_UPDATE_INTERVAL or self.last_weather_fetch == 0:
+                if now >= next_sample:
+                    self.collect_sample()
+                    while next_sample <= now:
+                        next_sample += self.config.sample_interval_seconds
+
+                if now >= next_weather:
                     self.fetch_weather()
-                    self.last_weather_fetch = now
+                    while next_weather <= now:
+                        next_weather += self.config.weather_update_interval_seconds
 
-                if (
-                    now - self.last_display_update
-                ) >= DISPLAY_UPDATE_INTERVAL or self.last_display_update == 0:
-                    self.display_averages()
-                    self.last_display_update = now
+                if now >= next_full:
+                    self.update_display(full_refresh=True)
+                    while next_full <= now:
+                        next_full += self.config.full_update_interval_seconds
+                    while next_partial <= now:
+                        next_partial += self.config.partial_update_interval_seconds
+                elif now >= next_partial:
+                    self.update_display(full_refresh=False)
+                    while next_partial <= now:
+                        next_partial += self.config.partial_update_interval_seconds
 
-                loop_duration = time.monotonic() - now
-                sleep_time = max(0, SAMPLE_INTERVAL - loop_duration)
-                time.sleep(sleep_time)
-
-        except KeyboardInterrupt:
-            print("Stopping manually via KeyboardInterrupt.")
-        except Exception as e:
-            print(f"Unexpected fatal error in main loop: {e}")
+                time.sleep(0.2)
         finally:
             self.shutdown()
 
+    def shutdown(self) -> None:
+        LOGGER.info("Shutting down hardware")
+
+        if self.scd4x is not None:
+            try:
+                self.scd4x.stop_periodic_measurement()
+            except Exception:
+                LOGGER.exception("Failed to stop SCD41 periodic measurement")
+
+        if self.sps30 is not None:
+            try:
+                self.sps30.stop_measurement()
+            except Exception:
+                LOGGER.exception("Failed to stop SPS30 measurement")
+            try:
+                self.sps30.sleep()
+            except Exception:
+                LOGGER.exception("Failed to put SPS30 to sleep")
+
+        if self.display is not None:
+            try:
+                self.display.close()
+            except Exception:
+                LOGGER.exception("Failed to close display")
+
+        self.http.close()
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+    try:
+        app = AirMonitorApp(AppConfig())
+        app.run()
+        return 0
+    except Exception:
+        LOGGER.exception("Air monitor terminated with a fatal error")
+        return 1
+
 
 if __name__ == "__main__":
-    monitor = AirMonitor()
-    monitor.main()
+    sys.exit(main())

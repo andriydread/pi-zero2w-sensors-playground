@@ -97,23 +97,19 @@ def create_display_image(width, height, data, font_path=None):
         font_huge = font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
 
     # Values
-    if isinstance(data.get("pm25"), (float)) and isinstance(data.get("pm10"), (float)):
+    if isinstance(data.get("pm25"), (int, float)) and isinstance(
+        data.get("pm10"), (int, float)
+    ):
         aqi_val = calculate_aqi(data.get("pm25"), data.get("pm10"))
         aqi_cat = get_aqi_category(aqi_val)
     else:
         aqi_val = None
         aqi_cat = None
 
-    co2_val = int(data.get("co2")) if isinstance(data.get("co2"), (int)) else "--"
+    co2_val = int(data.get("co2")) if isinstance(data.get("co2"), (int, float)) else None
 
-    temp = (
-        float(data.get("temp")) if isinstance(data.get("temp"), (int, float)) else "---"
-    )
-    humid = (
-        float(data.get("humid"))
-        if isinstance(data.get("humid"), (int, float))
-        else "---"
-    )
+    temp = float(data.get("temp")) if isinstance(data.get("temp"), (int, float)) else None
+    humid = float(data.get("humid")) if isinstance(data.get("humid"), (int, float)) else None
 
     # Layout Grid (Horizontal Dividers)
     Y_LINE_1, Y_LINE_2, Y_LINE_3 = 30, 92, 122
@@ -128,10 +124,13 @@ def create_display_image(width, height, data, font_path=None):
 
     # --- 2. SENSOR DATA (AQI & CO2) ---
 
-    draw_left_text(draw, f"AQI: {aqi_val}", font_huge, EDGE_PAD, Y_LINE_1 + 2)
-    draw_left_text(draw, f"{aqi_cat}", font_md, EDGE_PAD, Y_LINE_1 + 38)
+    aqi_text = f"AQI: {aqi_val}" if aqi_val is not None else "AQI: --"
+    aqi_category = aqi_cat if aqi_cat is not None else "N/A"
+    draw_left_text(draw, aqi_text, font_huge, EDGE_PAD, Y_LINE_1 + 2)
+    draw_left_text(draw, aqi_category, font_md, EDGE_PAD, Y_LINE_1 + 38)
 
-    draw_right_text(draw, f"CO2: {co2_val}", font_huge, width, EDGE_PAD, Y_LINE_1 + 2)
+    co2_text = f"CO2: {co2_val}" if co2_val is not None else "CO2: --"
+    draw_right_text(draw, co2_text, font_huge, width, EDGE_PAD, Y_LINE_1 + 2)
     draw_right_text(
         draw, get_co2_category(co2_val), font_md, width, EDGE_PAD, Y_LINE_1 + 38
     )
@@ -140,8 +139,8 @@ def create_display_image(width, height, data, font_path=None):
 
     # --- 3. SENSOR DATA (Temp & Humidity) ---
 
-    temp_str = f"Temp: {temp:.1f}°"
-    humid_str = f"Humid: {humid:.1f} %"
+    temp_str = f"Temp: {temp:.1f}°" if temp is not None else "Temp: --"
+    humid_str = f"Humid: {humid:.1f} %" if humid is not None else "Humid: --"
 
     draw_left_text(draw, temp_str, font_lg, EDGE_PAD, Y_LINE_2 + 2)
     draw_right_text(draw, humid_str, font_lg, width, EDGE_PAD, Y_LINE_2 + 2)
