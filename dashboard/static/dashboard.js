@@ -8,6 +8,36 @@ const metricFormats = {
 };
 
 const chartState = new Map();
+const weatherIconMap = {
+  0: 'sun.png',
+  1: 'sun.png',
+  2: 'partly_cloudy.png',
+  3: 'cloud.png',
+  45: 'fog.png',
+  48: 'fog.png',
+  51: 'rain.png',
+  53: 'rain.png',
+  55: 'rain.png',
+  56: 'rain.png',
+  57: 'rain.png',
+  61: 'rain.png',
+  63: 'rain.png',
+  65: 'rain.png',
+  66: 'rain.png',
+  67: 'rain.png',
+  71: 'snow.png',
+  73: 'snow.png',
+  75: 'snow.png',
+  77: 'snow.png',
+  80: 'rain.png',
+  81: 'rain.png',
+  82: 'rain.png',
+  85: 'snow.png',
+  86: 'snow.png',
+  95: 'storm.png',
+  96: 'storm.png',
+  99: 'storm.png',
+};
 let selectedHours = 24;
 
 function formatTimestamp(value) {
@@ -15,7 +45,8 @@ function formatTimestamp(value) {
     return '--';
   }
   const date = new Date(value);
-  return date.toLocaleString();
+  const two = (n) => String(n).padStart(2, '0');
+  return `${two(date.getHours())}:${two(date.getMinutes())} ${two(date.getDate())}-${two(date.getMonth() + 1)}-${date.getFullYear()}`;
 }
 
 function calculateAqi(pm25, pm10) {
@@ -63,10 +94,16 @@ function aqiCategory(value) {
   return 'Hazardous';
 }
 
+function co2Category(value) {
+  if (value == null) return '--';
+  if (value < 1000) return 'Good';
+  if (value < 1500) return 'Moderate';
+  return 'Unhealthy';
+}
+
 function getDisplayMetrics(summary) {
   const displayState = summary.latest_display_snapshot?.value || {};
-  const snapshot = displayState.snapshot || {};
-  return snapshot;
+  return displayState.snapshot || {};
 }
 
 function renderSummary(summary) {
@@ -81,6 +118,7 @@ function renderSummary(summary) {
   document.getElementById('metric-tps').textContent = metricFormats.tps(snapshot.tps);
   document.getElementById('metric-aqi').textContent = aqi == null ? '--' : String(aqi);
   document.getElementById('metric-aqi-label').textContent = aqiCategory(aqi);
+  document.getElementById('metric-co2-label').textContent = co2Category(snapshot.co2);
   document.getElementById('latest-sample-time').textContent = `Dashboard sample: ${formatTimestamp(snapshot.timestamp)}`;
 
   const collector = summary.collector_status?.value || {};
@@ -89,7 +127,7 @@ function renderSummary(summary) {
   document.getElementById('scd41-asc-enabled').checked = !!collector.scd41_asc_enabled;
 
   const weather = summary.latest_weather?.value || {};
-  document.getElementById('weather-updated').textContent = `Updated: ${summary.latest_weather?.updated_at || '--'}`;
+  document.getElementById('weather-updated').textContent = `Updated: ${formatTimestamp(summary.latest_weather?.updated_at)}`;
   renderWeather(weather);
   renderCommands(summary.recent_commands || []);
 }
@@ -106,11 +144,17 @@ function renderWeather(weather) {
     const card = document.createElement('article');
     card.className = 'forecast-card';
     const [windowLabel, maxTemp, minTemp, precip, code] = block;
+    const icon = weatherIconMap[code] || 'sun.png';
     card.innerHTML = `
       <h3>${windowLabel}</h3>
+      <div class="forecast-meta">
+        <img class="forecast-icon" src="/assets/icons/${icon}" alt="forecast icon">
+        <div>
+          <p>Condition icon matches the e-paper display</p>
+        </div>
+      </div>
       <p>Max/Min: ${maxTemp ?? '--'} / ${minTemp ?? '--'}</p>
-      <p>Rain: ${precip ?? '--'}%</p>
-      <p>WMO: ${code ?? '--'}</p>
+      <p>Rain chance: ${precip ?? '--'}%</p>
     `;
     grid.appendChild(card);
   }
@@ -188,7 +232,7 @@ function renderLineChart(svgId, rows, key, color, formatValue) {
     ${labels.join('')}
   `;
 
-  chartState.set(svgId, { coordinates, formatValue, color, padding, width, height });
+  chartState.set(svgId, { coordinates, formatValue, color, width, height });
 }
 
 function installChartHover(svgId) {
@@ -244,10 +288,13 @@ async function fetchHistory() {
   const response = await fetch(`/api/history?hours=${selectedHours}`);
   const data = await response.json();
   const rows = data.rows || [];
-  renderLineChart('chart-co2', rows, 'co2', '#1f5c4a', (row) => `${Math.round(row.co2)} ppm`);
+  const aqiRows = rows.map((row) => ({ ...row, aqi: calculateAqi(row.pm25, row.pm10) }));
   renderLineChart('chart-temp', rows, 'temp', '#b85c38', (row) => `${row.temp.toFixed(1)} C`);
   renderLineChart('chart-humid', rows, 'humid', '#2b6f9e', (row) => `${row.humid.toFixed(1)} %`);
+  renderLineChart('chart-co2', rows, 'co2', '#1f5c4a', (row) => `${Math.round(row.co2)} ppm`);
+  renderLineChart('chart-aqi', aqiRows, 'aqi', '#9e6f00', (row) => `${Math.round(row.aqi)}`);
   renderLineChart('chart-pm25', rows, 'pm25', '#5b4b8a', (row) => `${row.pm25.toFixed(2)} ug/m3`);
+  renderLineChart('chart-pm10', rows, 'pm10', '#6f4a2a', (row) => `${row.pm10.toFixed(2)} ug/m3`);
 }
 
 async function submitCommand(command, payload = {}) {
@@ -300,7 +347,7 @@ function installActions() {
     await submitCommand('scd41_set_asc', { enabled, persist });
   });
 
-  ['chart-co2', 'chart-temp', 'chart-humid', 'chart-pm25'].forEach(installChartHover);
+  ['chart-temp', 'chart-humid', 'chart-co2', 'chart-aqi', 'chart-pm25', 'chart-pm10'].forEach(installChartHover);
 }
 
 async function refreshAll() {

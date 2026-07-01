@@ -10,9 +10,7 @@
   <main class="page">
     <section class="hero">
       <div>
-        <p class="eyebrow">Local Dashboard</p>
         <h1>Air Monitor</h1>
-        <p class="lede">Latest 1-minute dashboard values, historical trends, and local control actions for the bedroom station.</p>
       </div>
       <div class="hero-meta">
         <div class="pill" id="collector-running">Collector: --</div>
@@ -24,12 +22,12 @@
     <section class="metrics" id="metric-grid">
       <article class="metric-card"><h2>Temperature</h2><p id="metric-temp">--</p></article>
       <article class="metric-card"><h2>Humidity</h2><p id="metric-humid">--</p></article>
-      <article class="metric-card"><h2>CO2</h2><p id="metric-co2">--</p></article>
-      <article class="metric-card metric-card-muted"><h2>Reserved</h2><p id="metric-empty">--</p></article>
+      <article class="metric-card"><h2>CO2</h2><p id="metric-co2">--</p><small id="metric-co2-label">--</small></article>
+      <article class="metric-card metric-card-muted"><h2>Reserved</h2><p id="metric-empty">--</p><small>Good candidate: dew point</small></article>
       <article class="metric-card"><h2>AQI</h2><p id="metric-aqi">--</p><small id="metric-aqi-label">--</small></article>
-      <article class="metric-card"><h2>PM2.5</h2><p id="metric-pm25">--</p></article>
-      <article class="metric-card"><h2>PM10</h2><p id="metric-pm10">--</p></article>
-      <article class="metric-card"><h2>Particle Size</h2><p id="metric-tps">--</p></article>
+      <article class="metric-card"><h2>PM2.5</h2><p id="metric-pm25">--</p><small>Smoke, combustion, soot, fine dust</small></article>
+      <article class="metric-card"><h2>PM10</h2><p id="metric-pm10">--</p><small>Pollen, mold, road dust, coarse dust</small></article>
+      <article class="metric-card"><h2>Particle Size</h2><p id="metric-tps">--</p><small>Typical particle size from the SPS30 reading</small></article>
     </section>
 
     <section class="panel weather-panel">
@@ -37,7 +35,17 @@
         <div class="title-with-help">
           <h2>Forecast Blocks</h2>
           <span class="help-chip" tabindex="0">?
-            <span class="help-popover">Three weather blocks are shown using the same forecast data that is merged into the e-paper snapshot.</span>
+            <span class="help-popover">
+              <strong>Purpose</strong>
+              <p>Shows the same forecast data used by the e-paper snapshot.</p>
+              <strong>Contents</strong>
+              <ul>
+                <li>Time window for the block</li>
+                <li>Max and min temperature</li>
+                <li>Rain probability</li>
+                <li>Weather icon matching the e-paper display</li>
+              </ul>
+            </span>
           </span>
         </div>
         <p id="weather-updated">Updated: --</p>
@@ -50,7 +58,16 @@
         <div class="title-with-help">
           <h2>History</h2>
           <span class="help-chip" tabindex="0">?
-            <span class="help-popover">Move the cursor over a chart to inspect the nearest point and its timestamp. Shorter ranges use finer time buckets.</span>
+            <span class="help-popover">
+              <strong>Purpose</strong>
+              <p>Shows recent historical trends from the SQLite history database.</p>
+              <strong>How To Read</strong>
+              <ul>
+                <li>Hover over a line to inspect the nearest value and timestamp</li>
+                <li>Shorter ranges use finer aggregation buckets</li>
+                <li>AQI is derived from PM2.5 and PM10 history</li>
+              </ul>
+            </span>
           </span>
         </div>
         <div class="range-switch">
@@ -61,10 +78,12 @@
         </div>
       </div>
       <div class="chart-grid">
-        <article class="chart-card"><h3>CO2</h3><div class="chart-frame"><svg id="chart-co2" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-co2"></div></div></article>
         <article class="chart-card"><h3>Temperature</h3><div class="chart-frame"><svg id="chart-temp" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-temp"></div></div></article>
         <article class="chart-card"><h3>Humidity</h3><div class="chart-frame"><svg id="chart-humid" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-humid"></div></div></article>
+        <article class="chart-card"><h3>CO2</h3><div class="chart-frame"><svg id="chart-co2" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-co2"></div></div></article>
+        <article class="chart-card"><h3>AQI</h3><div class="chart-frame"><svg id="chart-aqi" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-aqi"></div></div></article>
         <article class="chart-card"><h3>PM2.5</h3><div class="chart-frame"><svg id="chart-pm25" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-pm25"></div></div></article>
+        <article class="chart-card"><h3>PM10</h3><div class="chart-frame"><svg id="chart-pm10" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-pm10"></div></div></article>
       </div>
     </section>
 
@@ -74,7 +93,15 @@
           <div class="title-with-help">
             <h2>Display</h2>
             <span class="help-chip" tabindex="0">?
-              <span class="help-popover">Full Refresh redraws the whole e-paper panel and helps reduce ghosting. Partial Refresh replays the current dashboard snapshot using the faster low-impact refresh mode.</span>
+              <span class="help-popover">
+                <strong>Purpose</strong>
+                <p>Replays the current dashboard snapshot on the e-paper display.</p>
+                <strong>Buttons</strong>
+                <ul>
+                  <li><strong>Full Refresh</strong>: redraws the whole panel and helps reduce ghosting</li>
+                  <li><strong>Partial Refresh</strong>: updates faster with less flashing using the current snapshot</li>
+                </ul>
+              </span>
             </span>
           </div>
           <p>Refresh the current e-paper snapshot.</p>
@@ -90,7 +117,15 @@
           <div class="title-with-help">
             <h2>SPS30</h2>
             <span class="help-chip" tabindex="0">?
-              <span class="help-popover">Run Fan Clean triggers the sensor's cleaning cycle. Auto-clean interval changes how often the SPS30 performs that maintenance automatically.</span>
+              <span class="help-popover">
+                <strong>Purpose</strong>
+                <p>Maintenance controls for the particulate sensor.</p>
+                <strong>Options</strong>
+                <ul>
+                  <li><strong>Run Fan Clean</strong>: starts the sensor cleaning cycle</li>
+                  <li><strong>Auto-clean interval</strong>: changes how often the sensor cleans itself automatically</li>
+                </ul>
+              </span>
             </span>
           </div>
           <p>Maintenance controls for the particulate sensor.</p>
@@ -118,7 +153,16 @@
           <div class="title-with-help">
             <h2>SCD41</h2>
             <span class="help-chip" tabindex="0">?
-              <span class="help-popover">Forced calibration should only be run in stable known air, usually outdoor fresh air. Persist in the ASC section means saving the ASC enabled or disabled setting into the sensor so it survives reboot.</span>
+              <span class="help-popover">
+                <strong>Purpose</strong>
+                <p>CO2 calibration controls.</p>
+                <strong>Options</strong>
+                <ul>
+                  <li><strong>Forced calibration</strong>: only run in stable known air, usually outdoor fresh air</li>
+                  <li><strong>Enable ASC</strong>: toggles automatic self calibration</li>
+                  <li><strong>Persist in sensor</strong>: saves the ASC setting inside the sensor so it survives reboot</li>
+                </ul>
+              </span>
             </span>
           </div>
           <p>CO2 calibration controls.</p>
@@ -141,7 +185,16 @@
         <div class="title-with-help">
           <h2>Recent Commands</h2>
           <span class="help-chip" tabindex="0">?
-            <span class="help-popover">Shows recent actions sent from the dashboard to the collector and whether they succeeded.</span>
+            <span class="help-popover">
+              <strong>Purpose</strong>
+              <p>Shows recent actions sent from the dashboard to the collector.</p>
+              <strong>Status</strong>
+              <ul>
+                <li><strong>Pending</strong>: queued and waiting</li>
+                <li><strong>Running</strong>: collector is executing it</li>
+                <li><strong>Succeeded / Failed</strong>: finished result</li>
+              </ul>
+            </span>
           </span>
         </div>
         <p id="command-status">No command submitted yet.</p>

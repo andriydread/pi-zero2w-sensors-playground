@@ -1,7 +1,8 @@
 import os
+from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from storage import AirMonitorDatabase
 
@@ -33,10 +34,16 @@ def choose_bucket_seconds(hours: int) -> int:
 def create_app() -> Flask:
     app = Flask(__name__)
     database = AirMonitorDatabase(env_str("AIRMONITOR_DATABASE_PATH", "data/airmonitor.db"))
+    project_root = Path(__file__).resolve().parents[1]
+    icons_dir = project_root / 'icons'
 
     @app.get("/")
     def index() -> str:
         return render_template("index.html")
+
+    @app.get('/assets/icons/<path:filename>')
+    def asset_icons(filename: str) -> Any:
+        return send_from_directory(icons_dir, filename)
 
     @app.get("/api/summary")
     def api_summary() -> Any:
