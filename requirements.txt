@@ -7,8 +7,6 @@ Pillow
 # Modules for I2C sensors
 # Adafruit helper
 adafruit-blinka
-# HTU21D Temp/Humid sensor
-adafruit-circuitpython-htu21d
 # SHT41 Temp/Humid sensor
 adafruit-circuitpython-sht4x
 # SCD41 CO2 sensor

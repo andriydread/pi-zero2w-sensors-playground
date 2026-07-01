@@ -8,15 +8,10 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import adafruit_scd4x
+import adafruit_sht4x
 import board
 import busio
 import requests
-from adafruit_htu21d import HTU21D
-
-try:
-    import adafruit_sht4x
-except ImportError:  # Optional dependency on systems that only use HTU21D.
-    adafruit_sht4x = None
 
 from lib.sps30_i2c import SPS30
 from lib.uc8253c import UC8253C_SPI
@@ -169,16 +164,9 @@ class AirMonitorApp:
         time.sleep(5)
 
     def _setup_ambient_sensor(self) -> AmbientSensor:
-        if adafruit_sht4x is not None:
-            try:
-                device = adafruit_sht4x.SHT4x(self.i2c)
-                LOGGER.info("Using SHT41 for ambient temperature and humidity")
-                return AmbientSensor(device, "SHT41")
-            except Exception:
-                LOGGER.exception("SHT41 initialization failed, falling back to HTU21D")
-
-        LOGGER.info("Using HTU21D for ambient temperature and humidity")
-        return AmbientSensor(HTU21D(self.i2c), "HTU21D")
+        device = adafruit_sht4x.SHT4x(self.i2c)
+        LOGGER.info("Using SHT41 for ambient temperature and humidity")
+        return AmbientSensor(device, "SHT41")
 
     def install_signal_handlers(self) -> None:
         signal.signal(signal.SIGTERM, self._handle_stop_signal)
