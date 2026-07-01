@@ -12,19 +12,21 @@
       <div>
         <p class="eyebrow">Local Dashboard</p>
         <h1>Air Monitor</h1>
-        <p class="lede">Latest measurements, historical trends, and local control actions for the bedroom station.</p>
+        <p class="lede">Latest 1-minute dashboard values, historical trends, and local control actions for the bedroom station.</p>
       </div>
       <div class="hero-meta">
         <div class="pill" id="collector-running">Collector: --</div>
         <div class="pill" id="collector-asc">ASC: --</div>
-        <div class="pill" id="latest-sample-time">Sample: --</div>
+        <div class="pill" id="latest-sample-time">Dashboard sample: --</div>
       </div>
     </section>
 
     <section class="metrics" id="metric-grid">
-      <article class="metric-card"><h2>CO2</h2><p id="metric-co2">--</p></article>
       <article class="metric-card"><h2>Temperature</h2><p id="metric-temp">--</p></article>
       <article class="metric-card"><h2>Humidity</h2><p id="metric-humid">--</p></article>
+      <article class="metric-card"><h2>CO2</h2><p id="metric-co2">--</p></article>
+      <article class="metric-card metric-card-muted"><h2>Reserved</h2><p id="metric-empty">--</p></article>
+      <article class="metric-card"><h2>AQI</h2><p id="metric-aqi">--</p><small id="metric-aqi-label">--</small></article>
       <article class="metric-card"><h2>PM2.5</h2><p id="metric-pm25">--</p></article>
       <article class="metric-card"><h2>PM10</h2><p id="metric-pm10">--</p></article>
       <article class="metric-card"><h2>Particle Size</h2><p id="metric-tps">--</p></article>
@@ -32,7 +34,12 @@
 
     <section class="panel weather-panel">
       <div class="panel-head">
-        <h2>Forecast Blocks</h2>
+        <div class="title-with-help">
+          <h2>Forecast Blocks</h2>
+          <span class="help-chip" tabindex="0">?
+            <span class="help-popover">Three weather blocks are shown using the same forecast data that is merged into the e-paper snapshot.</span>
+          </span>
+        </div>
         <p id="weather-updated">Updated: --</p>
       </div>
       <div class="forecast-grid" id="forecast-grid"></div>
@@ -40,7 +47,12 @@
 
     <section class="panel chart-panel">
       <div class="panel-head">
-        <h2>History</h2>
+        <div class="title-with-help">
+          <h2>History</h2>
+          <span class="help-chip" tabindex="0">?
+            <span class="help-popover">Move the cursor over a chart to inspect the nearest point and its timestamp. Shorter ranges use finer time buckets.</span>
+          </span>
+        </div>
         <div class="range-switch">
           <button data-hours="6">6h</button>
           <button data-hours="24" class="active">24h</button>
@@ -49,17 +61,22 @@
         </div>
       </div>
       <div class="chart-grid">
-        <article class="chart-card"><h3>CO2</h3><svg id="chart-co2" viewBox="0 0 640 220"></svg></article>
-        <article class="chart-card"><h3>Temperature</h3><svg id="chart-temp" viewBox="0 0 640 220"></svg></article>
-        <article class="chart-card"><h3>Humidity</h3><svg id="chart-humid" viewBox="0 0 640 220"></svg></article>
-        <article class="chart-card"><h3>PM2.5</h3><svg id="chart-pm25" viewBox="0 0 640 220"></svg></article>
+        <article class="chart-card"><h3>CO2</h3><div class="chart-frame"><svg id="chart-co2" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-co2"></div></div></article>
+        <article class="chart-card"><h3>Temperature</h3><div class="chart-frame"><svg id="chart-temp" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-temp"></div></div></article>
+        <article class="chart-card"><h3>Humidity</h3><div class="chart-frame"><svg id="chart-humid" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-humid"></div></div></article>
+        <article class="chart-card"><h3>PM2.5</h3><div class="chart-frame"><svg id="chart-pm25" viewBox="0 0 640 220"></svg><div class="chart-tooltip" id="tooltip-chart-pm25"></div></div></article>
       </div>
     </section>
 
     <section class="controls-grid">
       <section class="panel">
         <div class="panel-head">
-          <h2>Display</h2>
+          <div class="title-with-help">
+            <h2>Display</h2>
+            <span class="help-chip" tabindex="0">?
+              <span class="help-popover">Full Refresh redraws the whole e-paper panel and helps reduce ghosting. Partial Refresh replays the current dashboard snapshot using the faster low-impact refresh mode.</span>
+            </span>
+          </div>
           <p>Refresh the current e-paper snapshot.</p>
         </div>
         <div class="button-row">
@@ -70,46 +87,63 @@
 
       <section class="panel">
         <div class="panel-head">
-          <h2>SPS30</h2>
+          <div class="title-with-help">
+            <h2>SPS30</h2>
+            <span class="help-chip" tabindex="0">?
+              <span class="help-popover">Run Fan Clean triggers the sensor's cleaning cycle. Auto-clean interval changes how often the SPS30 performs that maintenance automatically.</span>
+            </span>
+          </div>
           <p>Maintenance controls for the particulate sensor.</p>
         </div>
         <div class="button-row">
           <button data-command="sps30_force_clean">Run Fan Clean</button>
         </div>
         <form id="sps30-auto-clean-form" class="stack-form">
-          <label for="auto-clean-seconds">Auto-clean interval, seconds</label>
-          <input id="auto-clean-seconds" name="seconds" type="number" min="0" value="604800">
+          <label for="auto-clean-value">Auto-clean interval</label>
+          <div class="input-combo">
+            <input id="auto-clean-value" name="value" type="number" min="0" value="7">
+            <select id="auto-clean-unit" name="unit">
+              <option value="seconds">seconds</option>
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
+              <option value="days" selected>days</option>
+            </select>
+          </div>
           <button type="submit">Update Interval</button>
         </form>
       </section>
 
       <section class="panel">
         <div class="panel-head">
-          <h2>SCD41</h2>
-          <p>CO2 calibration and compensation controls.</p>
+          <div class="title-with-help">
+            <h2>SCD41</h2>
+            <span class="help-chip" tabindex="0">?
+              <span class="help-popover">Forced calibration should only be run in stable known air, usually outdoor fresh air. Persist in the ASC section means saving the ASC enabled or disabled setting into the sensor so it survives reboot.</span>
+            </span>
+          </div>
+          <p>CO2 calibration controls.</p>
         </div>
         <form id="scd41-calibration-form" class="stack-form">
           <label for="target-co2">Forced calibration target, ppm</label>
           <input id="target-co2" name="target_co2" type="number" min="350" max="2000" value="420">
           <button type="submit">Run Forced Calibration</button>
         </form>
-        <form id="scd41-asc-form" class="stack-form inline-form">
+        <form id="scd41-asc-form" class="stack-form inline-form asc-form">
           <label class="checkbox"><input id="scd41-asc-enabled" name="enabled" type="checkbox"> Enable ASC</label>
-          <label class="checkbox"><input id="scd41-asc-persist" name="persist" type="checkbox"> Persist</label>
+          <label class="checkbox"><input id="scd41-asc-persist" name="persist" type="checkbox"> Persist in sensor</label>
           <button type="submit">Apply ASC Setting</button>
-        </form>
-        <form id="scd41-altitude-form" class="stack-form">
-          <label for="scd41-altitude">Altitude, meters</label>
-          <input id="scd41-altitude" name="altitude" type="number" min="0" max="5000" value="0">
-          <label class="checkbox"><input id="scd41-altitude-persist" name="persist" type="checkbox"> Persist</label>
-          <button type="submit">Set Altitude</button>
         </form>
       </section>
     </section>
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Recent Commands</h2>
+        <div class="title-with-help">
+          <h2>Recent Commands</h2>
+          <span class="help-chip" tabindex="0">?
+            <span class="help-popover">Shows recent actions sent from the dashboard to the collector and whether they succeeded.</span>
+          </span>
+        </div>
         <p id="command-status">No command submitted yet.</p>
       </div>
       <div class="command-list" id="command-list"></div>

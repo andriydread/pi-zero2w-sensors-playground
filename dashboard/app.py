@@ -69,7 +69,6 @@ def create_app() -> Flask:
             "sps30_set_auto_cleaning_interval",
             "scd41_force_calibration",
             "scd41_set_asc",
-            "scd41_set_altitude",
         }
         if command not in allowed_commands:
             return jsonify({"error": f"unsupported command: {command}"}), 400

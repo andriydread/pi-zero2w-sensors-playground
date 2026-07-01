@@ -20,7 +20,7 @@ body {
     linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
   font-family: "DejaVu Sans", sans-serif;
 }
-button, input {
+button, input, select {
   font: inherit;
 }
 .page {
@@ -70,13 +70,14 @@ button, input {
 }
 .metrics {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
   margin-top: 20px;
 }
 .metric-card {
   border-radius: 22px;
   padding: 18px;
+  min-height: 128px;
 }
 .metric-card h2 {
   margin: 0 0 10px;
@@ -89,6 +90,14 @@ button, input {
   margin: 0;
   font-size: 1.9rem;
   font-weight: 700;
+}
+.metric-card small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+.metric-card-muted {
+  background: rgba(243, 239, 228, 0.72);
 }
 .panel {
   border-radius: 26px;
@@ -107,6 +116,52 @@ button, input {
 .panel-head p {
   margin: 0;
   color: var(--muted);
+}
+.title-with-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+}
+.help-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: help;
+}
+.help-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 20;
+  width: 280px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.help-chip:hover .help-popover,
+.help-chip:focus .help-popover,
+.help-chip:focus-visible .help-popover {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
 }
 .forecast-grid, .controls-grid {
   display: grid;
@@ -151,13 +206,31 @@ button, input {
   border-radius: 22px;
   padding: 16px;
 }
+.chart-frame {
+  position: relative;
+  margin-top: 12px;
+}
 .chart-card svg {
   width: 100%;
   height: auto;
   display: block;
-  margin-top: 12px;
   border-radius: 14px;
   background: linear-gradient(180deg, #fffdf8, #f3efe4);
+}
+.chart-tooltip {
+  position: absolute;
+  z-index: 10;
+  min-width: 124px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(24, 32, 40, 0.92);
+  color: white;
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -100%);
+  transition: opacity 0.12s ease;
 }
 .controls-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -177,12 +250,20 @@ button, input {
   grid-template-columns: repeat(3, auto);
   align-items: center;
 }
-input[type="number"] {
+.asc-form {
+  align-items: end;
+}
+input[type="number"], select {
   width: 100%;
   padding: 12px 14px;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: white;
+}
+.input-combo {
+  display: grid;
+  grid-template-columns: 1fr 140px;
+  gap: 10px;
 }
 .checkbox {
   display: flex;
@@ -220,7 +301,9 @@ input[type="number"] {
   .metrics,
   .chart-grid,
   .controls-grid,
-  .forecast-grid {
+  .forecast-grid,
+  .input-combo,
+  .inline-form {
     grid-template-columns: 1fr;
   }
 }

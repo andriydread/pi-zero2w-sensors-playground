@@ -7,6 +7,7 @@ const metricFormats = {
   tps: (value) => value == null ? '--' : `${value.toFixed(2)} um`,
 };
 
+const chartState = new Map();
 let selectedHours = 24;
 
 function formatTimestamp(value) {
@@ -17,15 +18,70 @@ function formatTimestamp(value) {
   return date.toLocaleString();
 }
 
+function calculateAqi(pm25, pm10) {
+  if (pm25 == null || pm10 == null) {
+    return null;
+  }
+
+  function linear(aqiHigh, aqiLow, concHigh, concLow, conc) {
+    return Math.round(((aqiHigh - aqiLow) / (concHigh - concLow)) * (conc - concLow) + aqiLow);
+  }
+
+  function aqiPm25(value) {
+    const c = Math.max(0, value);
+    if (c <= 12.0) return linear(50, 0, 12.0, 0, c);
+    if (c <= 35.4) return linear(100, 51, 35.4, 12.1, c);
+    if (c <= 55.4) return linear(150, 101, 55.4, 35.5, c);
+    if (c <= 150.4) return linear(200, 151, 150.4, 55.5, c);
+    if (c <= 250.4) return linear(300, 201, 250.4, 150.5, c);
+    if (c <= 350.4) return linear(400, 301, 350.4, 250.5, c);
+    if (c <= 500.4) return linear(500, 401, 500.4, 350.5, c);
+    return 500;
+  }
+
+  function aqiPm10(value) {
+    const c = Math.max(0, value);
+    if (c <= 54) return linear(50, 0, 54, 0, c);
+    if (c <= 154) return linear(100, 51, 154, 55, c);
+    if (c <= 254) return linear(150, 101, 254, 155, c);
+    if (c <= 354) return linear(200, 151, 354, 255, c);
+    if (c <= 424) return linear(300, 201, 424, 355, c);
+    if (c <= 504) return linear(400, 301, 504, 425, c);
+    if (c <= 604) return linear(500, 401, 604, 505, c);
+    return 500;
+  }
+
+  return Math.max(aqiPm25(pm25), aqiPm10(pm10));
+}
+
+function aqiCategory(value) {
+  if (value == null) return '--';
+  if (value <= 50) return 'Good';
+  if (value <= 100) return 'Moderate';
+  if (value <= 175) return 'Unhealthy';
+  if (value <= 300) return 'Very Unhealthy';
+  return 'Hazardous';
+}
+
+function getDisplayMetrics(summary) {
+  const displayState = summary.latest_display_snapshot?.value || {};
+  const snapshot = displayState.snapshot || {};
+  return snapshot;
+}
+
 function renderSummary(summary) {
-  const latest = summary.latest_measurement || {};
-  document.getElementById('metric-co2').textContent = metricFormats.co2(latest.co2);
-  document.getElementById('metric-temp').textContent = metricFormats.temp(latest.temp);
-  document.getElementById('metric-humid').textContent = metricFormats.humid(latest.humid);
-  document.getElementById('metric-pm25').textContent = metricFormats.pm25(latest.pm25);
-  document.getElementById('metric-pm10').textContent = metricFormats.pm10(latest.pm10);
-  document.getElementById('metric-tps').textContent = metricFormats.tps(latest.tps);
-  document.getElementById('latest-sample-time').textContent = `Sample: ${formatTimestamp(latest.timestamp)}`;
+  const snapshot = getDisplayMetrics(summary);
+  const aqi = calculateAqi(snapshot.pm25, snapshot.pm10);
+
+  document.getElementById('metric-co2').textContent = metricFormats.co2(snapshot.co2);
+  document.getElementById('metric-temp').textContent = metricFormats.temp(snapshot.temp);
+  document.getElementById('metric-humid').textContent = metricFormats.humid(snapshot.humid);
+  document.getElementById('metric-pm25').textContent = metricFormats.pm25(snapshot.pm25);
+  document.getElementById('metric-pm10').textContent = metricFormats.pm10(snapshot.pm10);
+  document.getElementById('metric-tps').textContent = metricFormats.tps(snapshot.tps);
+  document.getElementById('metric-aqi').textContent = aqi == null ? '--' : String(aqi);
+  document.getElementById('metric-aqi-label').textContent = aqiCategory(aqi);
+  document.getElementById('latest-sample-time').textContent = `Dashboard sample: ${formatTimestamp(snapshot.timestamp)}`;
 
   const collector = summary.collector_status?.value || {};
   document.getElementById('collector-running').textContent = `Collector: ${collector.running ? 'running' : 'stopped'}`;
@@ -41,7 +97,7 @@ function renderSummary(summary) {
 function renderWeather(weather) {
   const grid = document.getElementById('forecast-grid');
   grid.innerHTML = '';
-  const entries = [weather[1], weather[2], weather[3]].filter(Boolean);
+  const entries = [weather[1], weather[2], weather[3], weather['1'], weather['2'], weather['3']].filter(Boolean).slice(0, 3);
   if (!entries.length) {
     grid.innerHTML = '<div class="empty-state">No forecast data yet.</div>';
     return;
@@ -83,10 +139,13 @@ function renderCommands(commands) {
   }
 }
 
-function renderLineChart(svgId, rows, key, color) {
+function renderLineChart(svgId, rows, key, color, formatValue) {
   const svg = document.getElementById(svgId);
+  const tooltip = document.getElementById(`tooltip-${svgId}`);
   if (!rows.length || rows.every((row) => row[key] == null)) {
     svg.innerHTML = '<text x="24" y="40" fill="#59636e" font-size="16">No data yet</text>';
+    tooltip.style.opacity = '0';
+    chartState.delete(svgId);
     return;
   }
 
@@ -123,9 +182,56 @@ function renderLineChart(svgId, rows, key, color) {
   svg.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
     ${grid.join('')}
+    <line id="crosshair-${svgId}" x1="0" y1="${padding.top}" x2="0" y2="${height - padding.bottom}" stroke="${color}" stroke-width="1.5" stroke-dasharray="4 4" opacity="0"></line>
+    <circle id="focus-${svgId}" cx="0" cy="0" r="5" fill="${color}" stroke="#fffdf7" stroke-width="2" opacity="0"></circle>
     <polyline fill="none" stroke="${color}" stroke-width="3" points="${polyline}"></polyline>
     ${labels.join('')}
   `;
+
+  chartState.set(svgId, { coordinates, formatValue, color, padding, width, height });
+}
+
+function installChartHover(svgId) {
+  const svg = document.getElementById(svgId);
+  const tooltip = document.getElementById(`tooltip-${svgId}`);
+
+  svg.addEventListener('mousemove', (event) => {
+    const state = chartState.get(svgId);
+    if (!state || !state.coordinates.length) {
+      return;
+    }
+    const rect = svg.getBoundingClientRect();
+    const scaleX = state.width / rect.width;
+    const cursorX = (event.clientX - rect.left) * scaleX;
+    let nearest = state.coordinates[0];
+    for (const point of state.coordinates) {
+      if (Math.abs(point.x - cursorX) < Math.abs(nearest.x - cursorX)) {
+        nearest = point;
+      }
+    }
+
+    const crosshair = document.getElementById(`crosshair-${svgId}`);
+    const focus = document.getElementById(`focus-${svgId}`);
+    crosshair.setAttribute('x1', nearest.x);
+    crosshair.setAttribute('x2', nearest.x);
+    crosshair.setAttribute('opacity', '1');
+    focus.setAttribute('cx', nearest.x);
+    focus.setAttribute('cy', nearest.y);
+    focus.setAttribute('opacity', '1');
+
+    tooltip.innerHTML = `<strong>${state.formatValue(nearest.row)}</strong><br>${formatTimestamp(nearest.row.timestamp)}`;
+    tooltip.style.opacity = '1';
+    tooltip.style.left = `${(nearest.x / state.width) * rect.width}px`;
+    tooltip.style.top = `${(nearest.y / state.height) * rect.height - 10}px`;
+  });
+
+  svg.addEventListener('mouseleave', () => {
+    const crosshair = document.getElementById(`crosshair-${svgId}`);
+    const focus = document.getElementById(`focus-${svgId}`);
+    if (crosshair) crosshair.setAttribute('opacity', '0');
+    if (focus) focus.setAttribute('opacity', '0');
+    tooltip.style.opacity = '0';
+  });
 }
 
 async function fetchSummary() {
@@ -138,10 +244,10 @@ async function fetchHistory() {
   const response = await fetch(`/api/history?hours=${selectedHours}`);
   const data = await response.json();
   const rows = data.rows || [];
-  renderLineChart('chart-co2', rows, 'co2', '#1f5c4a');
-  renderLineChart('chart-temp', rows, 'temp', '#b85c38');
-  renderLineChart('chart-humid', rows, 'humid', '#2b6f9e');
-  renderLineChart('chart-pm25', rows, 'pm25', '#5b4b8a');
+  renderLineChart('chart-co2', rows, 'co2', '#1f5c4a', (row) => `${Math.round(row.co2)} ppm`);
+  renderLineChart('chart-temp', rows, 'temp', '#b85c38', (row) => `${row.temp.toFixed(1)} C`);
+  renderLineChart('chart-humid', rows, 'humid', '#2b6f9e', (row) => `${row.humid.toFixed(1)} %`);
+  renderLineChart('chart-pm25', rows, 'pm25', '#5b4b8a', (row) => `${row.pm25.toFixed(2)} ug/m3`);
 }
 
 async function submitCommand(command, payload = {}) {
@@ -174,7 +280,10 @@ function installActions() {
 
   document.getElementById('sps30-auto-clean-form').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const seconds = Number(document.getElementById('auto-clean-seconds').value);
+    const value = Number(document.getElementById('auto-clean-value').value);
+    const unit = document.getElementById('auto-clean-unit').value;
+    const multipliers = { seconds: 1, minutes: 60, hours: 3600, days: 86400 };
+    const seconds = Math.round(value * multipliers[unit]);
     await submitCommand('sps30_set_auto_cleaning_interval', { seconds });
   });
 
@@ -191,12 +300,7 @@ function installActions() {
     await submitCommand('scd41_set_asc', { enabled, persist });
   });
 
-  document.getElementById('scd41-altitude-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const altitude = Number(document.getElementById('scd41-altitude').value);
-    const persist = document.getElementById('scd41-altitude-persist').checked;
-    await submitCommand('scd41_set_altitude', { altitude, persist });
-  });
+  ['chart-co2', 'chart-temp', 'chart-humid', 'chart-pm25'].forEach(installChartHover);
 }
 
 async function refreshAll() {
