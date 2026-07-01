@@ -12,6 +12,8 @@ Restart=always
 User=pi
 Environment=AIRMONITOR_PARTIAL_UPDATE_INTERVAL=60
 Environment=AIRMONITOR_FULL_UPDATE_INTERVAL=300
+Environment=AIRMONITOR_DATABASE_PATH=/home/pi/air_station/data/airmonitor.db
+Environment=AIRMONITOR_SCD41_ASC_ENABLED=false
 
 [Install]
 WantedBy=multi-user.target

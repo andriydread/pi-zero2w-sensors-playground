@@ -12,5 +12,6 @@ adafruit-circuitpython-sht4x
 # SCD41 CO2 sensor
 adafruit-circuitpython-scd4x
 
-# Misc
+# Dashboard and misc
+Flask
 requests

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Air Monitor Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Local Dashboard</p>
+        <h1>Air Monitor</h1>
+        <p class="lede">Latest measurements, historical trends, and local control actions for the bedroom station.</p>
+      </div>
+      <div class="hero-meta">
+        <div class="pill" id="collector-running">Collector: --</div>
+        <div class="pill" id="collector-asc">ASC: --</div>
+        <div class="pill" id="latest-sample-time">Sample: --</div>
+      </div>
+    </section>
+
+    <section class="metrics" id="metric-grid">
+      <article class="metric-card"><h2>CO2</h2><p id="metric-co2">--</p></article>
+      <article class="metric-card"><h2>Temperature</h2><p id="metric-temp">--</p></article>
+      <article class="metric-card"><h2>Humidity</h2><p id="metric-humid">--</p></article>
+      <article class="metric-card"><h2>PM2.5</h2><p id="metric-pm25">--</p></article>
+      <article class="metric-card"><h2>PM10</h2><p id="metric-pm10">--</p></article>
+      <article class="metric-card"><h2>Particle Size</h2><p id="metric-tps">--</p></article>
+    </section>
+
+    <section class="panel weather-panel">
+      <div class="panel-head">
+        <h2>Forecast Blocks</h2>
+        <p id="weather-updated">Updated: --</p>
+      </div>
+      <div class="forecast-grid" id="forecast-grid"></div>
+    </section>
+
+    <section class="panel chart-panel">
+      <div class="panel-head">
+        <h2>History</h2>
+        <div class="range-switch">
+          <button data-hours="6">6h</button>
+          <button data-hours="24" class="active">24h</button>
+          <button data-hours="72">3d</button>
+          <button data-hours="168">7d</button>
+        </div>
+      </div>
+      <div class="chart-grid">
+        <article class="chart-card"><h3>CO2</h3><svg id="chart-co2" viewBox="0 0 640 220"></svg></article>
+        <article class="chart-card"><h3>Temperature</h3><svg id="chart-temp" viewBox="0 0 640 220"></svg></article>
+        <article class="chart-card"><h3>Humidity</h3><svg id="chart-humid" viewBox="0 0 640 220"></svg></article>
+        <article class="chart-card"><h3>PM2.5</h3><svg id="chart-pm25" viewBox="0 0 640 220"></svg></article>
+      </div>
+    </section>
+
+    <section class="controls-grid">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Display</h2>
+          <p>Refresh the current e-paper snapshot.</p>
+        </div>
+        <div class="button-row">
+          <button data-command="display_full_refresh">Full Refresh</button>
+          <button data-command="display_partial_refresh">Partial Refresh</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>SPS30</h2>
+          <p>Maintenance controls for the particulate sensor.</p>
+        </div>
+        <div class="button-row">
+          <button data-command="sps30_force_clean">Run Fan Clean</button>
+        </div>
+        <form id="sps30-auto-clean-form" class="stack-form">
+          <label for="auto-clean-seconds">Auto-clean interval, seconds</label>
+          <input id="auto-clean-seconds" name="seconds" type="number" min="0" value="604800">
+          <button type="submit">Update Interval</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>SCD41</h2>
+          <p>CO2 calibration and compensation controls.</p>
+        </div>
+        <form id="scd41-calibration-form" class="stack-form">
+          <label for="target-co2">Forced calibration target, ppm</label>
+          <input id="target-co2" name="target_co2" type="number" min="350" max="2000" value="420">
+          <button type="submit">Run Forced Calibration</button>
+        </form>
+        <form id="scd41-asc-form" class="stack-form inline-form">
+          <label class="checkbox"><input id="scd41-asc-enabled" name="enabled" type="checkbox"> Enable ASC</label>
+          <label class="checkbox"><input id="scd41-asc-persist" name="persist" type="checkbox"> Persist</label>
+          <button type="submit">Apply ASC Setting</button>
+        </form>
+        <form id="scd41-altitude-form" class="stack-form">
+          <label for="scd41-altitude">Altitude, meters</label>
+          <input id="scd41-altitude" name="altitude" type="number" min="0" max="5000" value="0">
+          <label class="checkbox"><input id="scd41-altitude-persist" name="persist" type="checkbox"> Persist</label>
+          <button type="submit">Set Altitude</button>
+        </form>
+      </section>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Recent Commands</h2>
+        <p id="command-status">No command submitted yet.</p>
+      </div>
+      <div class="command-list" id="command-list"></div>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>
