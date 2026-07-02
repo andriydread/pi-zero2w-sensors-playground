@@ -256,6 +256,14 @@ class AirMonitorDatabase:
             )
         return history
 
+
+    def delete_history(self) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM measurements")
+            deleted_rows = int(cursor.rowcount if cursor.rowcount is not None else 0)
+            connection.execute("VACUUM")
+        return deleted_rows
+
     def get_dashboard_summary(self) -> Dict[str, Any]:
         return {
             "latest_measurement": self.get_latest_measurement(),

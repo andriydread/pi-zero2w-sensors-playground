@@ -61,6 +61,12 @@ def create_app() -> Flask:
             }
         )
 
+
+    @app.delete("/api/history")
+    def api_delete_history() -> Any:
+        deleted_rows = database.delete_history()
+        return jsonify({"status": f"Deleted {deleted_rows} history rows."})
+
     @app.post("/api/commands")
     def api_commands() -> Any:
         body: Dict[str, Any] = request.get_json(silent=True) or {}

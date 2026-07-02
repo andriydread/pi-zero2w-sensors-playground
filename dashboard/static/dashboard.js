@@ -310,6 +310,19 @@ async function submitCommand(command, payload = {}) {
   await refreshAll();
 }
 
+
+async function deleteHistory() {
+  const confirmed = window.confirm('Delete all stored history measurements? This cannot be undone.');
+  if (!confirmed) {
+    return;
+  }
+
+  const response = await fetch('/api/history', { method: 'DELETE' });
+  const data = await response.json();
+  document.getElementById('command-status').textContent = response.ok ? data.status : (data.error || 'Delete history failed');
+  await refreshAll();
+}
+
 function installActions() {
   document.querySelectorAll('[data-command]').forEach((button) => {
     button.addEventListener('click', async () => {
@@ -347,6 +360,8 @@ function installActions() {
     const persist = document.getElementById('scd41-asc-persist').checked;
     await submitCommand('scd41_set_asc', { enabled, persist });
   });
+
+  document.getElementById('delete-history-button').addEventListener('click', deleteHistory);
 
   ['chart-temp', 'chart-humid', 'chart-co2', 'chart-aqi', 'chart-pm25', 'chart-pm10'].forEach(installChartHover);
 }

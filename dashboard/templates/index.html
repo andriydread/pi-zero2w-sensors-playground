@@ -93,19 +93,11 @@
           <h2>Controls</h2>
           <span class="help-chip" tabindex="0">?
             <span class="help-popover">
-              <strong>Purpose</strong>
-              <p>Operational controls and database status for the air monitor.</p>
-              <strong>Cards</strong>
-              <ul>
-                <li><strong>Display</strong>: replays the current e-paper snapshot</li>
-                <li><strong>SPS30</strong>: fan-clean and auto-clean interval controls</li>
-                <li><strong>SCD41</strong>: forced calibration and ASC controls</li>
-                <li><strong>Database Management</strong>: current history database location and deploy handling</li>
-              </ul>
+              <strong>Controls</strong>
+              <p>Display refresh, SPS30 maintenance, SCD41 calibration, and history database actions.</p>
             </span>
           </span>
         </div>
-        <p>Sensor, display, and history database controls.</p>
       </div>
       <div class="controls-grid">
         <section class="control-card">
@@ -114,17 +106,11 @@
               <h2>Display</h2>
               <span class="help-chip" tabindex="0">?
                 <span class="help-popover">
-                  <strong>Purpose</strong>
-                  <p>Replays the current dashboard snapshot on the e-paper display.</p>
-                  <strong>Buttons</strong>
-                  <ul>
-                    <li><strong>Full Refresh</strong>: redraws the whole panel and helps reduce ghosting</li>
-                    <li><strong>Partial Refresh</strong>: updates faster with less flashing using the current snapshot</li>
-                  </ul>
+                  <strong>Display</strong>
+                  <p><strong>Full Refresh</strong> redraws the whole panel. <strong>Partial Refresh</strong> updates faster with less flashing.</p>
                 </span>
               </span>
             </div>
-            <p>Refresh the current e-paper snapshot.</p>
           </div>
           <div class="button-row">
             <button data-command="display_full_refresh">Full Refresh</button>
@@ -138,17 +124,11 @@
               <h2>SPS30</h2>
               <span class="help-chip" tabindex="0">?
                 <span class="help-popover">
-                  <strong>Purpose</strong>
-                  <p>Maintenance controls for the particulate sensor.</p>
-                  <strong>Options</strong>
-                  <ul>
-                    <li><strong>Run Fan Clean</strong>: starts the sensor cleaning cycle</li>
-                    <li><strong>Auto-clean interval</strong>: changes how often the sensor cleans itself automatically</li>
-                  </ul>
+                  <strong>SPS30</strong>
+                  <p><strong>Run Fan Clean</strong> starts the cleaning cycle. <strong>Auto-clean interval</strong> changes the sensor's automatic cleaning cadence.</p>
                 </span>
               </span>
             </div>
-            <p>Maintenance controls for the particulate sensor.</p>
           </div>
           <div class="button-row">
             <button data-command="sps30_force_clean">Run Fan Clean</button>
@@ -174,18 +154,11 @@
               <h2>SCD41</h2>
               <span class="help-chip" tabindex="0">?
                 <span class="help-popover">
-                  <strong>Purpose</strong>
-                  <p>CO2 calibration controls.</p>
-                  <strong>Options</strong>
-                  <ul>
-                    <li><strong>Forced calibration</strong>: only run in stable known air, usually outdoor fresh air</li>
-                    <li><strong>Enable ASC</strong>: toggles automatic self calibration</li>
-                    <li><strong>Persist in sensor</strong>: saves the ASC setting inside the sensor so it survives reboot</li>
-                  </ul>
+                  <strong>SCD41</strong>
+                  <p><strong>Forced calibration</strong> should be run only in known stable air. <strong>Enable ASC</strong> toggles automatic self calibration, and <strong>Persist in sensor</strong> saves it across reboots.</p>
                 </span>
               </span>
             </div>
-            <p>CO2 calibration controls.</p>
           </div>
           <form id="scd41-calibration-form" class="stack-form">
             <label for="target-co2">Forced calibration target, ppm</label>
@@ -205,21 +178,18 @@
               <h2>Database Management</h2>
               <span class="help-chip" tabindex="0">?
                 <span class="help-popover">
-                  <strong>Purpose</strong>
-                  <p>Shows where the SQLite history database lives and how code deploys treat it.</p>
-                  <strong>Deploy</strong>
-                  <ul>
-                    <li>The default `data/` directory is excluded from sync</li>
-                    <li>The remote `data/` directory is protected from `rsync --delete`</li>
-                  </ul>
+                  <strong>Database Management</strong>
+                  <p>The history database path is shown below. Deploy sync excludes `data/` and the delete button clears stored measurements.</p>
                 </span>
               </span>
             </div>
-            <p>Current history database path and deploy policy.</p>
           </div>
           <div class="info-list">
             <p><span>Path</span><strong id="database-path">--</strong></p>
             <p><span>Deploy</span><strong>Protected from sync delete</strong></p>
+          </div>
+          <div class="button-row">
+            <button id="delete-history-button" class="button-danger" type="button">Delete History</button>
           </div>
         </section>
       </div>
