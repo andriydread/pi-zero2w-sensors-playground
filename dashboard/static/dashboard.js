@@ -101,25 +101,24 @@ function co2Category(value) {
   return 'Unhealthy';
 }
 
-function getDisplayMetrics(summary) {
-  const displayState = summary.latest_display_snapshot?.value || {};
-  return displayState.snapshot || {};
+function getLiveMetrics(summary) {
+  return summary.latest_measurement || {};
 }
 
 function renderSummary(summary) {
-  const snapshot = getDisplayMetrics(summary);
-  const aqi = calculateAqi(snapshot.pm25, snapshot.pm10);
+  const metrics = getLiveMetrics(summary);
+  const aqi = calculateAqi(metrics.pm25, metrics.pm10);
 
-  document.getElementById('metric-co2').textContent = metricFormats.co2(snapshot.co2);
-  document.getElementById('metric-temp').textContent = metricFormats.temp(snapshot.temp);
-  document.getElementById('metric-humid').textContent = metricFormats.humid(snapshot.humid);
-  document.getElementById('metric-pm25').textContent = metricFormats.pm25(snapshot.pm25);
-  document.getElementById('metric-pm10').textContent = metricFormats.pm10(snapshot.pm10);
-  document.getElementById('metric-tps').textContent = metricFormats.tps(snapshot.tps);
+  document.getElementById('metric-co2').textContent = metricFormats.co2(metrics.co2);
+  document.getElementById('metric-temp').textContent = metricFormats.temp(metrics.temp);
+  document.getElementById('metric-humid').textContent = metricFormats.humid(metrics.humid);
+  document.getElementById('metric-pm25').textContent = metricFormats.pm25(metrics.pm25);
+  document.getElementById('metric-pm10').textContent = metricFormats.pm10(metrics.pm10);
+  document.getElementById('metric-tps').textContent = metricFormats.tps(metrics.tps);
   document.getElementById('metric-aqi').textContent = aqi == null ? '--' : String(aqi);
   document.getElementById('metric-aqi-label').textContent = aqiCategory(aqi);
-  document.getElementById('metric-co2-label').textContent = co2Category(snapshot.co2);
-  document.getElementById('latest-sample-time').textContent = `Dashboard sample: ${formatTimestamp(snapshot.timestamp)}`;
+  document.getElementById('metric-co2-label').textContent = co2Category(metrics.co2);
+  document.getElementById('latest-sample-time').textContent = `Dashboard sample: ${formatTimestamp(metrics.timestamp)}`;
 
   const collector = summary.collector_status?.value || {};
   document.getElementById('collector-running').textContent = `Collector: ${collector.running ? 'running' : 'stopped'}`;
@@ -145,16 +144,17 @@ function renderWeather(weather) {
     card.className = 'forecast-card';
     const [windowLabel, maxTemp, minTemp, precip, code] = block;
     const icon = weatherIconMap[code] || 'sun.png';
+    const tempText = (maxTemp != null && minTemp != null) ? `${maxTemp} / ${minTemp} C` : '-- / -- C';
+    const rainText = precip != null ? `${precip}%` : '--%';
     card.innerHTML = `
-      <h3>${windowLabel}</h3>
-      <div class="forecast-meta">
+      <p class="forecast-window">${windowLabel}</p>
+      <div class="forecast-body">
         <img class="forecast-icon" src="/assets/icons/${icon}" alt="forecast icon">
-        <div>
-          <p>Condition icon matches the e-paper display</p>
+        <div class="forecast-stats">
+          <p class="forecast-temp">${tempText}</p>
+          <p class="forecast-rain">Rain: ${rainText}</p>
         </div>
       </div>
-      <p>Max/Min: ${maxTemp ?? '--'} / ${minTemp ?? '--'}</p>
-      <p>Rain chance: ${precip ?? '--'}%</p>
     `;
     grid.appendChild(card);
   }
@@ -306,7 +306,7 @@ async function submitCommand(command, payload = {}) {
   const data = await response.json();
   const status = response.ok ? `Queued command #${data.id}` : (data.error || 'Command failed');
   document.getElementById('command-status').textContent = status;
-  await fetchSummary();
+  await refreshAll();
 }
 
 function installActions() {
@@ -356,4 +356,4 @@ async function refreshAll() {
 
 installActions();
 refreshAll();
-setInterval(fetchSummary, 15000);
+setInterval(refreshAll, 15000);

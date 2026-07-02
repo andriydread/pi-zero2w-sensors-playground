@@ -69,6 +69,9 @@ button, input, select {
   padding: 18px;
   min-height: 132px;
 }
+.metric-card-empty {
+  min-height: 92px;
+}
 .metric-card h2 {
   margin: 0 0 10px;
   font-size: 14px;
@@ -183,20 +186,46 @@ button, input, select {
   border-radius: 20px;
   padding: 16px;
   background: linear-gradient(180deg, rgba(255,255,255,0.8), rgba(216,235,228,0.45));
+  display: grid;
+  gap: 14px;
+  min-height: 212px;
 }
-.forecast-card h3, .forecast-card p {
-  margin: 0 0 8px;
+.forecast-card p {
+  margin: 0;
 }
-.forecast-meta {
+.forecast-window {
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.forecast-body {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 10px 0 8px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 138px;
 }
 .forecast-icon {
-  width: 42px;
-  height: 42px;
+  width: 88px;
+  height: 88px;
   object-fit: contain;
+  align-self: flex-end;
+}
+.forecast-stats {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  text-align: right;
+  margin-left: auto;
+}
+.forecast-temp {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+.forecast-rain {
+  color: var(--muted);
 }
 .range-switch {
   display: flex;
@@ -323,5 +352,52 @@ input[type="number"], select {
   .input-combo,
   .inline-form {
     grid-template-columns: 1fr;
+  }
+
+  .panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 16px;
+  }
+
+  .hero,
+  .panel,
+  .metric-card,
+  .chart-card {
+    border-radius: 20px;
+  }
+
+  .hero {
+    padding: 20px;
+  }
+
+  .metric-card {
+    min-height: 112px;
+  }
+
+  .forecast-card {
+    min-height: 0;
+  }
+
+  .forecast-body {
+    min-height: 0;
+  }
+
+  .forecast-icon {
+    width: 72px;
+    height: 72px;
+  }
+
+  .command-item header {
+    flex-direction: column;
+  }
+
+  .help-popover {
+    width: min(320px, calc(100vw - 48px));
   }
 }

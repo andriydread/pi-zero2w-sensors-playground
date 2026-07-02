@@ -385,19 +385,6 @@ class AirMonitorApp:
                 },
             )
             return {"message": "Updated SCD41 ASC setting", "enabled": enabled}
-
-        if command == "scd41_set_altitude":
-            if self.scd4x is None:
-                raise RuntimeError("SCD41 is not initialized")
-            altitude = int(payload.get("altitude", 0))
-            self.scd4x.stop_periodic_measurement()
-            time.sleep(0.5)
-            self.scd4x.altitude = altitude
-            if payload.get("persist"):
-                self.scd4x.persist_settings()
-            self.scd4x.start_periodic_measurement()
-            return {"message": "Updated SCD41 altitude", "altitude": altitude}
-
         raise ValueError(f"Unsupported command: {command}")
 
     def run(self) -> None:
