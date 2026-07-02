@@ -184,10 +184,10 @@ button, input, select {
 .forecast-card {
   border: 1px solid var(--line);
   border-radius: 20px;
-  padding: 16px;
+  padding: 14px 18px;
   background: linear-gradient(180deg, rgba(255,255,255,0.8), rgba(216,235,228,0.45));
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 .forecast-card p {
   margin: 0;
@@ -199,30 +199,33 @@ button, input, select {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   text-align: center;
+  margin-bottom: 2px;
 }
 .forecast-body {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  width: fit-content;
+  display: grid;
+  grid-template-columns: 76px minmax(120px, max-content);
+  align-items: center;
+  justify-content: center;
+  column-gap: 12px;
+  width: max-content;
   margin: 0 auto;
 }
 .forecast-icon {
-  width: 88px;
-  height: 88px;
+  width: 76px;
+  height: 76px;
   object-fit: contain;
-  align-self: flex-end;
 }
 .forecast-stats {
   display: grid;
-  gap: 4px;
+  gap: 2px;
+  min-width: 120px;
   justify-items: start;
   text-align: left;
 }
 .forecast-stat {
   font-size: 1.1rem;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.15;
 }
 .range-switch {
   display: flex;
@@ -422,9 +425,19 @@ input[type="number"], select {
     min-height: 0;
   }
 
+  .forecast-body {
+    grid-template-columns: 68px minmax(108px, 1fr);
+    column-gap: 10px;
+    width: 100%;
+  }
+
   .forecast-icon {
-    width: 72px;
-    height: 72px;
+    width: 68px;
+    height: 68px;
+  }
+
+  .forecast-stats {
+    min-width: 0;
   }
 
   .forecast-stat {
