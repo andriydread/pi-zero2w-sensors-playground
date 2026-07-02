@@ -1,8 +1,10 @@
-# Protect the virtual environment and logs on the Pi from being deleted
+# Protect the virtual environment, logs, and database on the Pi from being deleted
 
 P .venv/
 P air_quality_log.csv
 P air_monitor.log
+P data/
+P data/***
 
 # Virtual environment
 
@@ -30,3 +32,7 @@ P air_monitor.log
 - air_monitor.log
 - air_quality_log_copy.csv
 - GEMINI.md
+
+# Database files stay on the Pi
+
+- data/

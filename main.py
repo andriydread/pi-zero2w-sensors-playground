@@ -177,6 +177,7 @@ class AirMonitorApp:
         LOGGER.info("Initializing SCD41")
         self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
         self.scd4x.self_calibration_enabled = self.scd41_asc_enabled
+        self.scd41_asc_enabled = bool(self.scd4x.self_calibration_enabled)
         self.scd4x.start_periodic_measurement()
 
         self.ambient_sensor = self._setup_ambient_sensor()
@@ -368,10 +369,10 @@ class AirMonitorApp:
             self.scd4x.stop_periodic_measurement()
             time.sleep(0.5)
             self.scd4x.self_calibration_enabled = enabled
+            self.scd41_asc_enabled = bool(self.scd4x.self_calibration_enabled)
             if payload.get("persist"):
                 self.scd4x.persist_settings()
             self.scd4x.start_periodic_measurement()
-            self.scd41_asc_enabled = enabled
             self.database.set_state(
                 "collector_status",
                 {

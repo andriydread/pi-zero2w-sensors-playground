@@ -33,14 +33,14 @@
     <section class="panel weather-panel">
       <div class="panel-head">
         <div class="title-with-help">
-          <h2>Forecast Blocks</h2>
+          <h2>Forecast</h2>
           <span class="help-chip" tabindex="0">?
             <span class="help-popover">
               <strong>Purpose</strong>
               <p>Shows the same forecast data used by the e-paper snapshot.</p>
               <strong>Contents</strong>
               <ul>
-                <li>Time window for the block</li>
+                <li>Time window for the forecast period</li>
                 <li>Max and min temperature</li>
                 <li>Rain probability</li>
                 <li>Weather icon matching the e-paper display</li>
@@ -87,97 +87,142 @@
       </div>
     </section>
 
-    <section class="controls-grid">
-      <section class="panel">
-        <div class="panel-head">
-          <div class="title-with-help">
-            <h2>Display</h2>
-            <span class="help-chip" tabindex="0">?
-              <span class="help-popover">
-                <strong>Purpose</strong>
-                <p>Replays the current dashboard snapshot on the e-paper display.</p>
-                <strong>Buttons</strong>
-                <ul>
-                  <li><strong>Full Refresh</strong>: redraws the whole panel and helps reduce ghosting</li>
-                  <li><strong>Partial Refresh</strong>: updates faster with less flashing using the current snapshot</li>
-                </ul>
-              </span>
+    <section class="panel controls-panel">
+      <div class="panel-head">
+        <div class="title-with-help">
+          <h2>Controls</h2>
+          <span class="help-chip" tabindex="0">?
+            <span class="help-popover">
+              <strong>Purpose</strong>
+              <p>Operational controls and database status for the air monitor.</p>
+              <strong>Cards</strong>
+              <ul>
+                <li><strong>Display</strong>: replays the current e-paper snapshot</li>
+                <li><strong>SPS30</strong>: fan-clean and auto-clean interval controls</li>
+                <li><strong>SCD41</strong>: forced calibration and ASC controls</li>
+                <li><strong>Database Management</strong>: current history database location and deploy handling</li>
+              </ul>
             </span>
+          </span>
+        </div>
+        <p>Sensor, display, and history database controls.</p>
+      </div>
+      <div class="controls-grid">
+        <section class="control-card">
+          <div class="panel-head">
+            <div class="title-with-help">
+              <h2>Display</h2>
+              <span class="help-chip" tabindex="0">?
+                <span class="help-popover">
+                  <strong>Purpose</strong>
+                  <p>Replays the current dashboard snapshot on the e-paper display.</p>
+                  <strong>Buttons</strong>
+                  <ul>
+                    <li><strong>Full Refresh</strong>: redraws the whole panel and helps reduce ghosting</li>
+                    <li><strong>Partial Refresh</strong>: updates faster with less flashing using the current snapshot</li>
+                  </ul>
+                </span>
+              </span>
+            </div>
+            <p>Refresh the current e-paper snapshot.</p>
           </div>
-          <p>Refresh the current e-paper snapshot.</p>
-        </div>
-        <div class="button-row">
-          <button data-command="display_full_refresh">Full Refresh</button>
-          <button data-command="display_partial_refresh">Partial Refresh</button>
-        </div>
-      </section>
+          <div class="button-row">
+            <button data-command="display_full_refresh">Full Refresh</button>
+            <button data-command="display_partial_refresh">Partial Refresh</button>
+          </div>
+        </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div class="title-with-help">
-            <h2>SPS30</h2>
-            <span class="help-chip" tabindex="0">?
-              <span class="help-popover">
-                <strong>Purpose</strong>
-                <p>Maintenance controls for the particulate sensor.</p>
-                <strong>Options</strong>
-                <ul>
-                  <li><strong>Run Fan Clean</strong>: starts the sensor cleaning cycle</li>
-                  <li><strong>Auto-clean interval</strong>: changes how often the sensor cleans itself automatically</li>
-                </ul>
+        <section class="control-card">
+          <div class="panel-head">
+            <div class="title-with-help">
+              <h2>SPS30</h2>
+              <span class="help-chip" tabindex="0">?
+                <span class="help-popover">
+                  <strong>Purpose</strong>
+                  <p>Maintenance controls for the particulate sensor.</p>
+                  <strong>Options</strong>
+                  <ul>
+                    <li><strong>Run Fan Clean</strong>: starts the sensor cleaning cycle</li>
+                    <li><strong>Auto-clean interval</strong>: changes how often the sensor cleans itself automatically</li>
+                  </ul>
+                </span>
               </span>
-            </span>
+            </div>
+            <p>Maintenance controls for the particulate sensor.</p>
           </div>
-          <p>Maintenance controls for the particulate sensor.</p>
-        </div>
-        <div class="button-row">
-          <button data-command="sps30_force_clean">Run Fan Clean</button>
-        </div>
-        <form id="sps30-auto-clean-form" class="stack-form">
-          <label for="auto-clean-value">Auto-clean interval</label>
-          <div class="input-combo">
-            <input id="auto-clean-value" name="value" type="number" min="0" value="7">
-            <select id="auto-clean-unit" name="unit">
-              <option value="seconds">seconds</option>
-              <option value="minutes">minutes</option>
-              <option value="hours">hours</option>
-              <option value="days" selected>days</option>
-            </select>
+          <div class="button-row">
+            <button data-command="sps30_force_clean">Run Fan Clean</button>
           </div>
-          <button type="submit">Update Interval</button>
-        </form>
-      </section>
+          <form id="sps30-auto-clean-form" class="stack-form">
+            <label for="auto-clean-value">Auto-clean interval</label>
+            <div class="input-combo">
+              <input id="auto-clean-value" name="value" type="number" min="0" value="7">
+              <select id="auto-clean-unit" name="unit">
+                <option value="seconds">seconds</option>
+                <option value="minutes">minutes</option>
+                <option value="hours">hours</option>
+                <option value="days" selected>days</option>
+              </select>
+            </div>
+            <button type="submit">Update Interval</button>
+          </form>
+        </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div class="title-with-help">
-            <h2>SCD41</h2>
-            <span class="help-chip" tabindex="0">?
-              <span class="help-popover">
-                <strong>Purpose</strong>
-                <p>CO2 calibration controls.</p>
-                <strong>Options</strong>
-                <ul>
-                  <li><strong>Forced calibration</strong>: only run in stable known air, usually outdoor fresh air</li>
-                  <li><strong>Enable ASC</strong>: toggles automatic self calibration</li>
-                  <li><strong>Persist in sensor</strong>: saves the ASC setting inside the sensor so it survives reboot</li>
-                </ul>
+        <section class="control-card">
+          <div class="panel-head">
+            <div class="title-with-help">
+              <h2>SCD41</h2>
+              <span class="help-chip" tabindex="0">?
+                <span class="help-popover">
+                  <strong>Purpose</strong>
+                  <p>CO2 calibration controls.</p>
+                  <strong>Options</strong>
+                  <ul>
+                    <li><strong>Forced calibration</strong>: only run in stable known air, usually outdoor fresh air</li>
+                    <li><strong>Enable ASC</strong>: toggles automatic self calibration</li>
+                    <li><strong>Persist in sensor</strong>: saves the ASC setting inside the sensor so it survives reboot</li>
+                  </ul>
+                </span>
               </span>
-            </span>
+            </div>
+            <p>CO2 calibration controls.</p>
           </div>
-          <p>CO2 calibration controls.</p>
-        </div>
-        <form id="scd41-calibration-form" class="stack-form">
-          <label for="target-co2">Forced calibration target, ppm</label>
-          <input id="target-co2" name="target_co2" type="number" min="350" max="2000" value="420">
-          <button type="submit">Run Forced Calibration</button>
-        </form>
-        <form id="scd41-asc-form" class="stack-form inline-form asc-form">
-          <label class="checkbox"><input id="scd41-asc-enabled" name="enabled" type="checkbox"> Enable ASC</label>
-          <label class="checkbox"><input id="scd41-asc-persist" name="persist" type="checkbox"> Persist in sensor</label>
-          <button type="submit">Apply ASC Setting</button>
-        </form>
-      </section>
+          <form id="scd41-calibration-form" class="stack-form">
+            <label for="target-co2">Forced calibration target, ppm</label>
+            <input id="target-co2" name="target_co2" type="number" min="350" max="2000" value="420">
+            <button type="submit">Run Forced Calibration</button>
+          </form>
+          <form id="scd41-asc-form" class="stack-form inline-form asc-form">
+            <label class="checkbox"><input id="scd41-asc-enabled" name="enabled" type="checkbox"> Enable ASC</label>
+            <label class="checkbox"><input id="scd41-asc-persist" name="persist" type="checkbox"> Persist in sensor</label>
+            <button type="submit">Apply ASC Setting</button>
+          </form>
+        </section>
+
+        <section class="control-card">
+          <div class="panel-head">
+            <div class="title-with-help">
+              <h2>Database Management</h2>
+              <span class="help-chip" tabindex="0">?
+                <span class="help-popover">
+                  <strong>Purpose</strong>
+                  <p>Shows where the SQLite history database lives and how code deploys treat it.</p>
+                  <strong>Deploy</strong>
+                  <ul>
+                    <li>The default `data/` directory is excluded from sync</li>
+                    <li>The remote `data/` directory is protected from `rsync --delete`</li>
+                  </ul>
+                </span>
+              </span>
+            </div>
+            <p>Current history database path and deploy policy.</p>
+          </div>
+          <div class="info-list">
+            <p><span>Path</span><strong id="database-path">--</strong></p>
+            <p><span>Deploy</span><strong>Protected from sync delete</strong></p>
+          </div>
+        </section>
+      </div>
     </section>
 
     <section class="panel">

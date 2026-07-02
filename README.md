@@ -40,10 +40,10 @@ http://<pi-address>:8080
 
 ## Deploy to Pi
 
-Mirror the workspace:
+Mirror the workspace. The default `data/` directory is excluded locally and protected remotely, so the Pi keeps its history database across deploys:
 
 ```bash
-rsync -avz --delete --filter="merge .rsync-filter" . pi@pizero.local:~/air_station
+rsync -avz --delete --filter="merge .rsync-filter" ./ pi@pizero.local:~/air_station
 ```
 
 Install Python dependencies on the Pi:

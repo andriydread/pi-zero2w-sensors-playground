@@ -187,8 +187,8 @@ button, input, select {
   padding: 16px;
   background: linear-gradient(180deg, rgba(255,255,255,0.8), rgba(216,235,228,0.45));
   display: grid;
-  gap: 14px;
-  min-height: 212px;
+  gap: 10px;
+  min-height: 196px;
 }
 .forecast-card p {
   margin: 0;
@@ -199,13 +199,15 @@ button, input, select {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  text-align: center;
 }
 .forecast-body {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 138px;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: end;
+  justify-content: center;
+  column-gap: 10px;
+  min-height: 124px;
 }
 .forecast-icon {
   width: 88px;
@@ -215,17 +217,14 @@ button, input, select {
 }
 .forecast-stats {
   display: grid;
-  gap: 8px;
-  justify-items: end;
-  text-align: right;
-  margin-left: auto;
+  gap: 6px;
+  justify-items: start;
+  text-align: left;
 }
-.forecast-temp {
-  font-size: 1.3rem;
+.forecast-stat {
+  font-size: 1.1rem;
   font-weight: 700;
-}
-.forecast-rain {
-  color: var(--muted);
+  line-height: 1.2;
 }
 .range-switch {
   display: flex;
@@ -279,8 +278,42 @@ button, input, select {
   transform: translate(-50%, -100%);
   transition: opacity 0.12s ease;
 }
+.controls-panel {
+  margin-top: 20px;
+}
 .controls-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+.control-card {
+  border-radius: 22px;
+  padding: 18px;
+  background: rgba(255, 253, 247, 0.92);
+  border: 1px solid rgba(215, 209, 195, 0.9);
+}
+.control-card .panel-head {
+  min-height: 76px;
+}
+.info-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.info-list p {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+.info-list span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.info-list strong {
+  font-size: 1rem;
+  overflow-wrap: anywhere;
 }
 .button-row {
   display: flex;
@@ -343,6 +376,12 @@ input[type="number"], select {
   color: var(--muted);
   padding: 12px 0;
 }
+@media (max-width: 1200px) {
+  .controls-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 980px) {
   .hero,
   .metrics,
@@ -391,6 +430,10 @@ input[type="number"], select {
   .forecast-icon {
     width: 72px;
     height: 72px;
+  }
+
+  .forecast-stat {
+    font-size: 1rem;
   }
 
   .command-item header {

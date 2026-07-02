@@ -124,6 +124,7 @@ function renderSummary(summary) {
   document.getElementById('collector-running').textContent = `Collector: ${collector.running ? 'running' : 'stopped'}`;
   document.getElementById('collector-asc').textContent = `ASC: ${collector.scd41_asc_enabled ? 'enabled' : 'disabled'}`;
   document.getElementById('scd41-asc-enabled').checked = !!collector.scd41_asc_enabled;
+  document.getElementById('database-path').textContent = collector.database_path || '--';
 
   const weather = summary.latest_weather?.value || {};
   document.getElementById('weather-updated').textContent = `Updated: ${formatTimestamp(summary.latest_weather?.updated_at)}`;
@@ -151,8 +152,8 @@ function renderWeather(weather) {
       <div class="forecast-body">
         <img class="forecast-icon" src="/assets/icons/${icon}" alt="forecast icon">
         <div class="forecast-stats">
-          <p class="forecast-temp">${tempText}</p>
-          <p class="forecast-rain">Rain: ${rainText}</p>
+          <p class="forecast-stat">${tempText}</p>
+          <p class="forecast-stat">Rain: ${rainText}</p>
         </div>
       </div>
     `;
