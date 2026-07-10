@@ -8,6 +8,45 @@ from typing import Any, Dict, List, Optional
 
 METRIC_FIELDS = ("co2", "temp", "humid", "pm1", "pm25", "pm4", "pm10", "tps")
 COMMAND_STATUSES = {"pending", "running", "succeeded", "failed"}
+MIN_VALID_CO2_PPM = 350
+VALID_TEMPERATURE_RANGE = (-40.0, 85.0)
+VALID_HUMIDITY_RANGE = (0.0, 100.0)
+
+
+def _normalize_co2(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    numeric = int(round(float(value)))
+    if numeric < MIN_VALID_CO2_PPM:
+        return None
+    return numeric
+
+
+def _normalize_temperature(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    numeric = round(float(value), 2)
+    if not (VALID_TEMPERATURE_RANGE[0] <= numeric <= VALID_TEMPERATURE_RANGE[1]):
+        return None
+    return numeric
+
+
+def _normalize_humidity(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    numeric = round(float(value), 2)
+    if not (VALID_HUMIDITY_RANGE[0] <= numeric <= VALID_HUMIDITY_RANGE[1]):
+        return None
+    return numeric
+
+
+def _normalize_non_negative(value: Any, digits: int = 2) -> Optional[float]:
+    if value is None:
+        return None
+    numeric = round(float(value), digits)
+    if numeric < 0:
+        return None
+    return numeric
 
 
 class AirMonitorDatabase:
@@ -85,9 +124,24 @@ class AirMonitorDatabase:
         except json.JSONDecodeError:
             return fallback
 
+    @staticmethod
+    def _normalize_measurement_payload(values: Dict[str, Optional[float]]) -> Dict[str, Optional[float]]:
+        return {
+            "co2": _normalize_co2(values.get("co2")),
+            "temp": _normalize_temperature(values.get("temp")),
+            "humid": _normalize_humidity(values.get("humid")),
+            "pm1": _normalize_non_negative(values.get("pm1")),
+            "pm25": _normalize_non_negative(values.get("pm25")),
+            "pm4": _normalize_non_negative(values.get("pm4")),
+            "pm10": _normalize_non_negative(values.get("pm10")),
+            "tps": _normalize_non_negative(values.get("tps")),
+        }
+
     def insert_measurement(self, values: Dict[str, Optional[float]]) -> None:
         timestamp = self._now_ts()
-        payload = {field: values.get(field) for field in METRIC_FIELDS}
+        payload = self._normalize_measurement_payload(
+            {field: values.get(field) for field in METRIC_FIELDS}
+        )
         with self._connect() as connection:
             connection.execute(
                 """
@@ -162,7 +216,7 @@ class AirMonitorDatabase:
                     params,
                 )
             connection.commit()
-        claimed = []
+        claimed: List[Dict[str, Any]] = []
         for row in rows:
             claimed.append(
                 {
@@ -244,18 +298,17 @@ class AirMonitorDatabase:
                 {
                     "timestamp": self._to_iso(row["bucket_ts"]),
                     "timestamp_ts": row["bucket_ts"],
-                    "co2": int(round(row["co2"])) if row["co2"] is not None else None,
-                    "temp": round(row["temp"], 2) if row["temp"] is not None else None,
-                    "humid": round(row["humid"], 2) if row["humid"] is not None else None,
-                    "pm1": round(row["pm1"], 2) if row["pm1"] is not None else None,
-                    "pm25": round(row["pm25"], 2) if row["pm25"] is not None else None,
-                    "pm4": round(row["pm4"], 2) if row["pm4"] is not None else None,
-                    "pm10": round(row["pm10"], 2) if row["pm10"] is not None else None,
-                    "tps": round(row["tps"], 2) if row["tps"] is not None else None,
+                    "co2": _normalize_co2(row["co2"]),
+                    "temp": _normalize_temperature(row["temp"]),
+                    "humid": _normalize_humidity(row["humid"]),
+                    "pm1": _normalize_non_negative(row["pm1"]),
+                    "pm25": _normalize_non_negative(row["pm25"]),
+                    "pm4": _normalize_non_negative(row["pm4"]),
+                    "pm10": _normalize_non_negative(row["pm10"]),
+                    "tps": _normalize_non_negative(row["tps"]),
                 }
             )
         return history
-
 
     def delete_history(self) -> int:
         with self._connect() as connection:
@@ -267,9 +320,11 @@ class AirMonitorDatabase:
     def get_dashboard_summary(self) -> Dict[str, Any]:
         return {
             "latest_measurement": self.get_latest_measurement(),
+            "latest_measurements": self.get_state("latest_measurements"),
             "latest_weather": self.get_state("latest_weather"),
             "latest_display_snapshot": self.get_state("latest_display_snapshot"),
             "collector_status": self.get_state("collector_status"),
+            "scd41_last_calibration": self.get_state("scd41_last_calibration"),
             "recent_commands": self.get_recent_commands(),
         }
 
@@ -277,12 +332,12 @@ class AirMonitorDatabase:
         return {
             "timestamp": self._to_iso(row["recorded_at"]),
             "timestamp_ts": row["recorded_at"],
-            "co2": row["co2"],
-            "temp": row["temp"],
-            "humid": row["humid"],
-            "pm1": row["pm1"],
-            "pm25": row["pm25"],
-            "pm4": row["pm4"],
-            "pm10": row["pm10"],
-            "tps": row["tps"],
+            "co2": _normalize_co2(row["co2"]),
+            "temp": _normalize_temperature(row["temp"]),
+            "humid": _normalize_humidity(row["humid"]),
+            "pm1": _normalize_non_negative(row["pm1"]),
+            "pm25": _normalize_non_negative(row["pm25"]),
+            "pm4": _normalize_non_negative(row["pm4"]),
+            "pm10": _normalize_non_negative(row["pm10"]),
+            "tps": _normalize_non_negative(row["tps"]),
         }

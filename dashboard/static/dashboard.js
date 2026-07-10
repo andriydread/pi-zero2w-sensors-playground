@@ -38,7 +38,52 @@ const weatherIconMap = {
   96: 'storm.png',
   99: 'storm.png',
 };
+const chartConfigs = {
+  temp: {
+    color: '#b85c38',
+    formatter: (row) => `${row.temp.toFixed(1)} C`,
+    bounds: (values) => {
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      return {
+        min: min < 0 ? Math.floor(min - 1) : 0,
+        max: max > 40 ? Math.ceil(max + 1) : 40,
+      };
+    },
+  },
+  humid: {
+    color: '#2b6f9e',
+    formatter: (row) => `${row.humid.toFixed(1)} %`,
+    bounds: () => ({ min: 0, max: 100 }),
+  },
+  co2: {
+    color: '#1f5c4a',
+    formatter: (row) => `${Math.round(row.co2)} ppm`,
+    bounds: (values) => dynamicFromZero(values, 100),
+  },
+  aqi: {
+    color: '#9e6f00',
+    formatter: (row) => `${Math.round(row.aqi)}`,
+    bounds: (values) => dynamicFromZero(values, 25),
+  },
+  pm25: {
+    color: '#5b4b8a',
+    formatter: (row) => `${row.pm25.toFixed(2)} ug/m3`,
+    bounds: (values) => dynamicFromZero(values, 5),
+  },
+  pm10: {
+    color: '#6f4a2a',
+    formatter: (row) => `${row.pm10.toFixed(2)} ug/m3`,
+    bounds: (values) => dynamicFromZero(values, 5),
+  },
+};
 let selectedHours = 24;
+
+function dynamicFromZero(values, minSpan) {
+  const rawMax = Math.max(...values, 0);
+  const paddedMax = rawMax <= 0 ? minSpan : Math.ceil((rawMax * 1.1) / minSpan) * minSpan;
+  return { min: 0, max: Math.max(minSpan, paddedMax) };
+}
 
 function formatTimestamp(value) {
   if (!value) {
@@ -47,6 +92,21 @@ function formatTimestamp(value) {
   const date = new Date(value);
   const two = (n) => String(n).padStart(2, '0');
   return `${two(date.getHours())}:${two(date.getMinutes())} ${two(date.getDate())}-${two(date.getMonth() + 1)}-${date.getFullYear()}`;
+}
+
+function formatAxisTimestampFromSeconds(seconds) {
+  const date = new Date(seconds * 1000);
+  const two = (n) => String(n).padStart(2, '0');
+  return `${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function calculateAqi(pm25, pm10) {
@@ -102,12 +162,58 @@ function co2Category(value) {
 }
 
 function getLiveMetrics(summary) {
-  return summary.latest_measurement || {};
+  return summary.latest_measurements?.value || summary.latest_measurement || {};
+}
+
+function sensorHealthSummary(collector) {
+  const sensors = collector.sensors || {};
+  const entries = ['scd41', 'sht41', 'sps30'].map((key) => sensors[key]).filter(Boolean);
+  if (!entries.length) {
+    return { headline: '--', detail: '--', pill: 'Sensors: --' };
+  }
+
+  const unhealthy = entries.filter((entry) => !entry.healthy);
+  if (!unhealthy.length) {
+    return {
+      headline: 'Healthy',
+      detail: 'SCD41, SHT41, and SPS30 are reporting normally.',
+      pill: 'Sensors: healthy',
+    };
+  }
+
+  const primary = unhealthy[0].last_error || 'One or more sensors need attention.';
+  return {
+    headline: `${unhealthy.length} issue${unhealthy.length === 1 ? '' : 's'}`,
+    detail: primary,
+    pill: `Sensors: ${unhealthy.length} issue${unhealthy.length === 1 ? '' : 's'}`,
+  };
+}
+
+function formatInterval(seconds) {
+  if (seconds == null) {
+    return '--';
+  }
+  if (seconds === 0) {
+    return 'disabled';
+  }
+  if (seconds % 86400 === 0) {
+    return `${seconds / 86400} day(s)`;
+  }
+  if (seconds % 3600 === 0) {
+    return `${seconds / 3600} hour(s)`;
+  }
+  if (seconds % 60 === 0) {
+    return `${seconds / 60} minute(s)`;
+  }
+  return `${seconds} second(s)`;
 }
 
 function renderSummary(summary) {
   const metrics = getLiveMetrics(summary);
   const aqi = calculateAqi(metrics.pm25, metrics.pm10);
+  const collector = summary.collector_status?.value || {};
+  const health = sensorHealthSummary(collector);
+  const calibration = summary.scd41_last_calibration?.value || {};
 
   document.getElementById('metric-co2').textContent = metricFormats.co2(metrics.co2);
   document.getElementById('metric-temp').textContent = metricFormats.temp(metrics.temp);
@@ -118,13 +224,18 @@ function renderSummary(summary) {
   document.getElementById('metric-aqi').textContent = aqi == null ? '--' : String(aqi);
   document.getElementById('metric-aqi-label').textContent = aqiCategory(aqi);
   document.getElementById('metric-co2-label').textContent = co2Category(metrics.co2);
+  document.getElementById('metric-status').textContent = health.headline;
+  document.getElementById('metric-status-detail').textContent = health.detail;
   document.getElementById('latest-sample-time').textContent = `Dashboard sample: ${formatTimestamp(metrics.timestamp)}`;
 
-  const collector = summary.collector_status?.value || {};
   document.getElementById('collector-running').textContent = `Collector: ${collector.running ? 'running' : 'stopped'}`;
   document.getElementById('collector-asc').textContent = `ASC: ${collector.scd41_asc_enabled ? 'enabled' : 'disabled'}`;
+  document.getElementById('collector-health').textContent = health.pill;
   document.getElementById('scd41-asc-enabled').checked = !!collector.scd41_asc_enabled;
   document.getElementById('database-path').textContent = collector.database_path || '--';
+  document.getElementById('auto-clean-current').textContent = formatInterval(collector.sps30_auto_cleaning_interval_seconds);
+  document.getElementById('scd41-last-calibration').textContent = formatTimestamp(calibration.calibrated_at || collector.sensors?.scd41?.last_calibration_at);
+  document.getElementById('scd41-recent-samples').textContent = String(collector.scd41_recent_valid_samples ?? '--');
 
   const weather = summary.latest_weather?.value || {};
   document.getElementById('weather-updated').textContent = `Updated: ${formatTimestamp(summary.latest_weather?.updated_at)}`;
@@ -148,12 +259,12 @@ function renderWeather(weather) {
     const tempText = (maxTemp != null && minTemp != null) ? `${maxTemp} / ${minTemp} C` : '-- / -- C';
     const rainText = precip != null ? `${precip}%` : '--%';
     card.innerHTML = `
-      <p class="forecast-window">${windowLabel}</p>
+      <p class="forecast-window">${escapeHtml(windowLabel)}</p>
       <div class="forecast-body">
         <img class="forecast-icon" src="/assets/icons/${icon}" alt="forecast icon">
         <div class="forecast-stats">
-          <p class="forecast-stat">${tempText}</p>
-          <p class="forecast-stat">Rain: ${rainText}</p>
+          <p class="forecast-stat">${escapeHtml(tempText)}</p>
+          <p class="forecast-stat">Rain: ${escapeHtml(rainText)}</p>
         </div>
       </div>
     `;
@@ -173,21 +284,32 @@ function renderCommands(commands) {
     item.className = 'command-item';
     item.innerHTML = `
       <header>
-        <span>${command.command}</span>
-        <span class="command-status-${command.status}">${command.status}</span>
+        <span>${escapeHtml(command.command)}</span>
+        <span class="command-status-${escapeHtml(command.status)}">${escapeHtml(command.status)}</span>
       </header>
-      <p>Created: ${formatTimestamp(command.created_at)}</p>
-      <p>Payload: ${JSON.stringify(command.payload || {})}</p>
-      <p>Result: ${JSON.stringify(command.result || {})}</p>
+      <p>Created: ${escapeHtml(formatTimestamp(command.created_at))}</p>
+      <p>Payload: ${escapeHtml(JSON.stringify(command.payload || {}))}</p>
+      <p>Result: ${escapeHtml(JSON.stringify(command.result || {}))}</p>
     `;
     list.appendChild(item);
   }
 }
 
-function renderLineChart(svgId, rows, key, color, formatValue) {
+function computeTicks(min, max, count) {
+  if (count <= 1) {
+    return [min];
+  }
+  const step = (max - min) / (count - 1);
+  return Array.from({ length: count }, (_, index) => min + step * index);
+}
+
+function renderLineChart(svgId, rows, key, config) {
   const svg = document.getElementById(svgId);
   const tooltip = document.getElementById(`tooltip-${svgId}`);
-  if (!rows.length || rows.every((row) => row[key] == null)) {
+  const rowsWithTime = rows.filter((row) => row.timestamp_ts != null);
+  const points = rowsWithTime.filter((row) => row[key] != null);
+
+  if (!points.length) {
     svg.innerHTML = '<text x="24" y="40" fill="#59636e" font-size="16">No data yet</text>';
     tooltip.style.opacity = '0';
     chartState.delete(svgId);
@@ -196,44 +318,50 @@ function renderLineChart(svgId, rows, key, color, formatValue) {
 
   const width = 640;
   const height = 220;
-  const padding = { top: 18, right: 18, bottom: 28, left: 44 };
-  const points = rows.filter((row) => row[key] != null);
+  const padding = { top: 18, right: 16, bottom: 40, left: 54 };
   const values = points.map((row) => row[key]);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const xStep = points.length > 1 ? (width - padding.left - padding.right) / (points.length - 1) : 0;
+  const yBounds = config.bounds(values);
+  const xMin = Math.min(...rowsWithTime.map((row) => row.timestamp_ts));
+  const xMaxRaw = Math.max(...rowsWithTime.map((row) => row.timestamp_ts));
+  const xMax = xMaxRaw === xMin ? xMin + 1 : xMaxRaw;
+  const yRange = yBounds.max - yBounds.min || 1;
 
-  const coordinates = points.map((row, index) => {
-    const x = padding.left + index * xStep;
-    const y = padding.top + (height - padding.top - padding.bottom) * (1 - ((row[key] - min) / range));
+  const coordinates = points.map((row) => {
+    const x = padding.left + ((row.timestamp_ts - xMin) / (xMax - xMin)) * (width - padding.left - padding.right);
+    const y = padding.top + (height - padding.top - padding.bottom) * (1 - ((row[key] - yBounds.min) / yRange));
     return { x, y, row };
   });
 
   const polyline = coordinates.map((point) => `${point.x},${point.y}`).join(' ');
-  const grid = [];
-  for (let i = 0; i < 4; i += 1) {
-    const y = padding.top + ((height - padding.top - padding.bottom) / 3) * i;
-    grid.push(`<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="#d7d1c3" stroke-dasharray="4 4" />`);
-  }
+  const yTicks = computeTicks(yBounds.min, yBounds.max, 5);
+  const xTicks = computeTicks(xMin, xMax, 5);
 
-  const labels = [
-    `<text x="${padding.left}" y="${height - 8}" fill="#59636e" font-size="12">${new Date(points[0].timestamp).toLocaleTimeString()}</text>`,
-    `<text x="${width - padding.right - 88}" y="${height - 8}" fill="#59636e" font-size="12">${new Date(points[points.length - 1].timestamp).toLocaleTimeString()}</text>`,
-    `<text x="6" y="${padding.top + 6}" fill="#59636e" font-size="12">${max.toFixed(1)}</text>`,
-    `<text x="6" y="${height - padding.bottom + 6}" fill="#59636e" font-size="12">${min.toFixed(1)}</text>`,
-  ];
+  const horizontalGrid = yTicks.map((tick) => {
+    const y = padding.top + (height - padding.top - padding.bottom) * (1 - ((tick - yBounds.min) / yRange));
+    return `
+      <line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="#d7d1c3" stroke-dasharray="4 4" />
+      <text x="8" y="${y + 4}" fill="#59636e" font-size="12">${tick.toFixed(1)}</text>
+    `;
+  }).join('');
+
+  const verticalTicks = xTicks.map((tick) => {
+    const x = padding.left + ((tick - xMin) / (xMax - xMin)) * (width - padding.left - padding.right);
+    return `
+      <line x1="${x}" y1="${padding.top}" x2="${x}" y2="${height - padding.bottom}" stroke="#ece6d9" />
+      <text x="${x}" y="${height - 12}" text-anchor="middle" fill="#59636e" font-size="12">${formatAxisTimestampFromSeconds(tick)}</text>
+    `;
+  }).join('');
 
   svg.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
-    ${grid.join('')}
-    <line id="crosshair-${svgId}" x1="0" y1="${padding.top}" x2="0" y2="${height - padding.bottom}" stroke="${color}" stroke-width="1.5" stroke-dasharray="4 4" opacity="0"></line>
-    <circle id="focus-${svgId}" cx="0" cy="0" r="5" fill="${color}" stroke="#fffdf7" stroke-width="2" opacity="0"></circle>
-    <polyline fill="none" stroke="${color}" stroke-width="3" points="${polyline}"></polyline>
-    ${labels.join('')}
+    ${horizontalGrid}
+    ${verticalTicks}
+    <line id="crosshair-${svgId}" x1="0" y1="${padding.top}" x2="0" y2="${height - padding.bottom}" stroke="${config.color}" stroke-width="1.5" stroke-dasharray="4 4" opacity="0"></line>
+    <circle id="focus-${svgId}" cx="0" cy="0" r="5" fill="${config.color}" stroke="#fffdf7" stroke-width="2" opacity="0"></circle>
+    <polyline fill="none" stroke="${config.color}" stroke-width="3" points="${polyline}"></polyline>
   `;
 
-  chartState.set(svgId, { coordinates, formatValue, color, width, height });
+  chartState.set(svgId, { coordinates, formatValue: config.formatter, width, height });
 }
 
 function installChartHover(svgId) {
@@ -264,7 +392,7 @@ function installChartHover(svgId) {
     focus.setAttribute('cy', nearest.y);
     focus.setAttribute('opacity', '1');
 
-    tooltip.innerHTML = `<strong>${state.formatValue(nearest.row)}</strong><br>${formatTimestamp(nearest.row.timestamp)}`;
+    tooltip.innerHTML = `<strong>${escapeHtml(state.formatValue(nearest.row))}</strong><br>${escapeHtml(formatTimestamp(nearest.row.timestamp))}`;
     tooltip.style.opacity = '1';
     tooltip.style.left = `${(nearest.x / state.width) * rect.width}px`;
     tooltip.style.top = `${(nearest.y / state.height) * rect.height - 10}px`;
@@ -279,37 +407,46 @@ function installChartHover(svgId) {
   });
 }
 
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  let data = {};
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = {};
+  }
+  if (!response.ok) {
+    throw new Error(data.error || 'Request failed');
+  }
+  return data;
+}
+
 async function fetchSummary() {
-  const response = await fetch('/api/summary');
-  const data = await response.json();
+  const data = await fetchJson('/api/summary');
   renderSummary(data);
 }
 
 async function fetchHistory() {
-  const response = await fetch(`/api/history?hours=${selectedHours}`);
-  const data = await response.json();
+  const data = await fetchJson(`/api/history?hours=${selectedHours}`);
   const rows = data.rows || [];
   const aqiRows = rows.map((row) => ({ ...row, aqi: calculateAqi(row.pm25, row.pm10) }));
-  renderLineChart('chart-temp', rows, 'temp', '#b85c38', (row) => `${row.temp.toFixed(1)} C`);
-  renderLineChart('chart-humid', rows, 'humid', '#2b6f9e', (row) => `${row.humid.toFixed(1)} %`);
-  renderLineChart('chart-co2', rows, 'co2', '#1f5c4a', (row) => `${Math.round(row.co2)} ppm`);
-  renderLineChart('chart-aqi', aqiRows, 'aqi', '#9e6f00', (row) => `${Math.round(row.aqi)}`);
-  renderLineChart('chart-pm25', rows, 'pm25', '#5b4b8a', (row) => `${row.pm25.toFixed(2)} ug/m3`);
-  renderLineChart('chart-pm10', rows, 'pm10', '#6f4a2a', (row) => `${row.pm10.toFixed(2)} ug/m3`);
+  renderLineChart('chart-temp', rows, 'temp', chartConfigs.temp);
+  renderLineChart('chart-humid', rows, 'humid', chartConfigs.humid);
+  renderLineChart('chart-co2', rows, 'co2', chartConfigs.co2);
+  renderLineChart('chart-aqi', aqiRows, 'aqi', chartConfigs.aqi);
+  renderLineChart('chart-pm25', rows, 'pm25', chartConfigs.pm25);
+  renderLineChart('chart-pm10', rows, 'pm10', chartConfigs.pm10);
 }
 
 async function submitCommand(command, payload = {}) {
-  const response = await fetch('/api/commands', {
+  const data = await fetchJson('/api/commands', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ command, payload }),
   });
-  const data = await response.json();
-  const status = response.ok ? `Queued command #${data.id}` : (data.error || 'Command failed');
-  document.getElementById('command-status').textContent = status;
+  document.getElementById('command-status').textContent = `Queued command #${data.id}`;
   await refreshAll();
 }
-
 
 async function deleteHistory() {
   const confirmed = window.confirm('Delete all stored history measurements? This cannot be undone.');
@@ -317,16 +454,19 @@ async function deleteHistory() {
     return;
   }
 
-  const response = await fetch('/api/history', { method: 'DELETE' });
-  const data = await response.json();
-  document.getElementById('command-status').textContent = response.ok ? data.status : (data.error || 'Delete history failed');
+  const data = await fetchJson('/api/history', { method: 'DELETE' });
+  document.getElementById('command-status').textContent = data.status;
   await refreshAll();
 }
 
 function installActions() {
   document.querySelectorAll('[data-command]').forEach((button) => {
     button.addEventListener('click', async () => {
-      await submitCommand(button.dataset.command);
+      try {
+        await submitCommand(button.dataset.command);
+      } catch (error) {
+        document.getElementById('command-status').textContent = error.message;
+      }
     });
   });
 
@@ -335,7 +475,11 @@ function installActions() {
       selectedHours = Number(button.dataset.hours);
       document.querySelectorAll('.range-switch button').forEach((item) => item.classList.remove('active'));
       button.classList.add('active');
-      await fetchHistory();
+      try {
+        await fetchHistory();
+      } catch (error) {
+        document.getElementById('command-status').textContent = error.message;
+      }
     });
   });
 
@@ -345,29 +489,53 @@ function installActions() {
     const unit = document.getElementById('auto-clean-unit').value;
     const multipliers = { seconds: 1, minutes: 60, hours: 3600, days: 86400 };
     const seconds = Math.round(value * multipliers[unit]);
-    await submitCommand('sps30_set_auto_cleaning_interval', { seconds });
+    try {
+      await submitCommand('sps30_set_auto_cleaning_interval', { seconds });
+    } catch (error) {
+      document.getElementById('command-status').textContent = error.message;
+    }
   });
 
   document.getElementById('scd41-calibration-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const target_co2 = Number(document.getElementById('target-co2').value);
-    await submitCommand('scd41_force_calibration', { target_co2 });
+    const confirmed = document.getElementById('scd41-calibration-confirm').checked;
+    const persist = document.getElementById('scd41-calibration-persist').checked;
+    try {
+      await submitCommand('scd41_force_calibration', { target_co2, confirmed, persist });
+    } catch (error) {
+      document.getElementById('command-status').textContent = error.message;
+    }
   });
 
   document.getElementById('scd41-asc-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const enabled = document.getElementById('scd41-asc-enabled').checked;
     const persist = document.getElementById('scd41-asc-persist').checked;
-    await submitCommand('scd41_set_asc', { enabled, persist });
+    try {
+      await submitCommand('scd41_set_asc', { enabled, persist });
+    } catch (error) {
+      document.getElementById('command-status').textContent = error.message;
+    }
   });
 
-  document.getElementById('delete-history-button').addEventListener('click', deleteHistory);
+  document.getElementById('delete-history-button').addEventListener('click', async () => {
+    try {
+      await deleteHistory();
+    } catch (error) {
+      document.getElementById('command-status').textContent = error.message;
+    }
+  });
 
   ['chart-temp', 'chart-humid', 'chart-co2', 'chart-aqi', 'chart-pm25', 'chart-pm10'].forEach(installChartHover);
 }
 
 async function refreshAll() {
-  await Promise.all([fetchSummary(), fetchHistory()]);
+  try {
+    await Promise.all([fetchSummary(), fetchHistory()]);
+  } catch (error) {
+    document.getElementById('command-status').textContent = error.message;
+  }
 }
 
 installActions();

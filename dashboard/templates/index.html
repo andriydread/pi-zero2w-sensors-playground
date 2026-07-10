@@ -15,6 +15,7 @@
       <div class="hero-meta">
         <div class="pill" id="collector-running">Collector: --</div>
         <div class="pill" id="collector-asc">ASC: --</div>
+        <div class="pill" id="collector-health">Sensors: --</div>
         <div class="pill" id="latest-sample-time">Dashboard sample: --</div>
       </div>
     </section>
@@ -23,7 +24,7 @@
       <article class="metric-card"><h2>Temperature</h2><p id="metric-temp">--</p></article>
       <article class="metric-card"><h2>Humidity</h2><p id="metric-humid">--</p></article>
       <article class="metric-card"><h2>CO2</h2><p id="metric-co2">--</p><small id="metric-co2-label">--</small></article>
-      <article class="metric-card metric-card-muted metric-card-empty"><h2>Reserved</h2></article>
+      <article class="metric-card metric-card-muted"><h2>Sensor Status</h2><p id="metric-status">--</p><small id="metric-status-detail">--</small></article>
       <article class="metric-card"><h2>AQI</h2><p id="metric-aqi">--</p><small id="metric-aqi-label">--</small></article>
       <article class="metric-card"><h2>PM2.5</h2><p id="metric-pm25">--</p><small>Smoke, combustion, soot, fine dust</small></article>
       <article class="metric-card"><h2>PM10</h2><p id="metric-pm10">--</p><small>Pollen, mold, road dust, coarse dust</small></article>
@@ -64,7 +65,7 @@
               <strong>How To Read</strong>
               <ul>
                 <li>Hover over a line to inspect the nearest value and timestamp</li>
-                <li>Shorter ranges use finer aggregation buckets</li>
+                <li>Axes keep fixed-safe baselines where that improves readability</li>
                 <li>AQI is derived from PM2.5 and PM10 history</li>
               </ul>
             </span>
@@ -94,30 +95,12 @@
           <span class="help-chip" tabindex="0">?
             <span class="help-popover">
               <strong>Controls</strong>
-              <p>Display refresh, SPS30 maintenance, SCD41 calibration, and history database actions.</p>
+              <p>SPS30 maintenance, SCD41 calibration, and history database actions. Display controls were removed to reduce accidental operational changes.</p>
             </span>
           </span>
         </div>
       </div>
       <div class="controls-grid">
-        <section class="control-card">
-          <div class="panel-head">
-            <div class="title-with-help">
-              <h2>Display</h2>
-              <span class="help-chip" tabindex="0">?
-                <span class="help-popover">
-                  <strong>Display</strong>
-                  <p><strong>Full Refresh</strong> redraws the whole panel. <strong>Partial Refresh</strong> updates faster with less flashing.</p>
-                </span>
-              </span>
-            </div>
-          </div>
-          <div class="button-row">
-            <button data-command="display_full_refresh">Full Refresh</button>
-            <button data-command="display_partial_refresh">Partial Refresh</button>
-          </div>
-        </section>
-
         <section class="control-card">
           <div class="panel-head">
             <div class="title-with-help">
@@ -129,6 +112,9 @@
                 </span>
               </span>
             </div>
+          </div>
+          <div class="info-list compact-info">
+            <p><span>Current Interval</span><strong id="auto-clean-current">--</strong></p>
           </div>
           <div class="button-row">
             <button data-command="sps30_force_clean">Run Fan Clean</button>
@@ -155,14 +141,20 @@
               <span class="help-chip" tabindex="0">?
                 <span class="help-popover">
                   <strong>SCD41</strong>
-                  <p><strong>Forced calibration</strong> should be run only in known stable air. <strong>Enable ASC</strong> toggles automatic self calibration, and <strong>Persist in sensor</strong> saves it across reboots.</p>
+                  <p><strong>Forced calibration</strong> is intentionally guarded. Use it only in known stable air after the sensor has been running long enough. <strong>Enable ASC</strong> toggles automatic self calibration.</p>
                 </span>
               </span>
             </div>
           </div>
+          <div class="info-list compact-info">
+            <p><span>Last Calibration</span><strong id="scd41-last-calibration">--</strong></p>
+            <p><span>Recent Stable Samples</span><strong id="scd41-recent-samples">--</strong></p>
+          </div>
           <form id="scd41-calibration-form" class="stack-form">
             <label for="target-co2">Forced calibration target, ppm</label>
             <input id="target-co2" name="target_co2" type="number" min="350" max="2000" value="420">
+            <label class="checkbox"><input id="scd41-calibration-confirm" name="confirmed" type="checkbox"> I confirm the sensor is in known stable reference air</label>
+            <label class="checkbox"><input id="scd41-calibration-persist" name="persist" type="checkbox" checked> Persist calibration in sensor</label>
             <button type="submit">Run Forced Calibration</button>
           </form>
           <form id="scd41-asc-form" class="stack-form inline-form asc-form">
@@ -179,7 +171,7 @@
               <span class="help-chip" tabindex="0">?
                 <span class="help-popover">
                   <strong>Database Management</strong>
-                  <p>The history database path is shown below. Deploy sync excludes `data/` and the delete button clears stored measurements.</p>
+                  <p>The history database path is shown below. Deploy sync excludes <code>data/</code> and the delete button clears stored measurements.</p>
                 </span>
               </span>
             </div>

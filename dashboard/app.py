@@ -1,10 +1,13 @@
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from storage import AirMonitorDatabase
+
+
+CommandValidator = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
 def env_int(name: str, default: int) -> int:
@@ -31,19 +34,111 @@ def choose_bucket_seconds(hours: int) -> int:
     return 1800
 
 
+def parse_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def parse_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{field_name} must be a boolean")
+
+
+def validate_empty(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {}
+
+
+def validate_sps30_interval(payload: Dict[str, Any]) -> Dict[str, Any]:
+    seconds = parse_int(payload.get("seconds"), "seconds")
+    if seconds < 0 or seconds > 31536000:
+        raise ValueError("seconds must be between 0 and 31536000")
+    return {"seconds": seconds}
+
+
+def validate_scd41_calibration(payload: Dict[str, Any]) -> Dict[str, Any]:
+    target_co2 = parse_int(payload.get("target_co2"), "target_co2")
+    if target_co2 < 350 or target_co2 > 2000:
+        raise ValueError("target_co2 must be between 350 and 2000 ppm")
+    confirmed = parse_bool(payload.get("confirmed"), "confirmed")
+    persist = True if payload.get("persist") is None else parse_bool(payload.get("persist"), "persist")
+    return {
+        "target_co2": target_co2,
+        "confirmed": confirmed,
+        "persist": persist,
+    }
+
+
+def validate_scd41_asc(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "enabled": parse_bool(payload.get("enabled"), "enabled"),
+        "persist": False if payload.get("persist") is None else parse_bool(payload.get("persist"), "persist"),
+    }
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     database = AirMonitorDatabase(env_str("AIRMONITOR_DATABASE_PATH", "data/airmonitor.db"))
     project_root = Path(__file__).resolve().parents[1]
-    icons_dir = project_root / 'icons'
+    icons_dir = project_root / "icons"
+    command_validators: Dict[str, CommandValidator] = {
+        "sps30_force_clean": validate_empty,
+        "sps30_set_auto_cleaning_interval": validate_sps30_interval,
+        "scd41_force_calibration": validate_scd41_calibration,
+        "scd41_set_asc": validate_scd41_asc,
+    }
+
+    @app.after_request
+    def add_response_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        if request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.errorhandler(ValueError)
+    def handle_value_error(exc: ValueError):
+        if request.path.startswith("/api/"):
+            return jsonify({"error": str(exc)}), 400
+        raise exc
+
+    @app.errorhandler(404)
+    def handle_not_found(_exc):
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "not found"}), 404
+        return "Not Found", 404
+
+    @app.errorhandler(500)
+    def handle_server_error(_exc):
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "internal server error"}), 500
+        return "Internal Server Error", 500
 
     @app.get("/")
     def index() -> str:
         return render_template("index.html")
 
-    @app.get('/assets/icons/<path:filename>')
+    @app.get("/assets/icons/<path:filename>")
     def asset_icons(filename: str) -> Any:
         return send_from_directory(icons_dir, filename)
+
+    @app.get("/api/health")
+    def api_health() -> Any:
+        summary = database.get_dashboard_summary()
+        collector = summary.get("collector_status") or {}
+        payload = collector.get("value") or {}
+        is_running = bool(payload.get("running"))
+        return jsonify({"ok": is_running, "collector": payload})
 
     @app.get("/api/summary")
     def api_summary() -> Any:
@@ -51,7 +146,7 @@ def create_app() -> Flask:
 
     @app.get("/api/history")
     def api_history() -> Any:
-        hours = max(1, min(env_int_from_request("hours", 24), 24 * 30))
+        hours = max(1, min(parse_int(request.args.get("hours", 24), "hours"), 24 * 30))
         bucket_seconds = choose_bucket_seconds(hours)
         return jsonify(
             {
@@ -61,7 +156,6 @@ def create_app() -> Flask:
             }
         )
 
-
     @app.delete("/api/history")
     def api_delete_history() -> Any:
         deleted_rows = database.delete_history()
@@ -69,34 +163,23 @@ def create_app() -> Flask:
 
     @app.post("/api/commands")
     def api_commands() -> Any:
-        body: Dict[str, Any] = request.get_json(silent=True) or {}
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
         command = str(body.get("command", "")).strip()
-        payload = body.get("payload") or {}
+        raw_payload = body.get("payload") or {}
         if not command:
             return jsonify({"error": "command is required"}), 400
-
-        allowed_commands = {
-            "display_full_refresh",
-            "display_partial_refresh",
-            "sps30_force_clean",
-            "sps30_set_auto_cleaning_interval",
-            "scd41_force_calibration",
-            "scd41_set_asc",
-        }
-        if command not in allowed_commands:
+        if command not in command_validators:
             return jsonify({"error": f"unsupported command: {command}"}), 400
+        if not isinstance(raw_payload, dict):
+            return jsonify({"error": "payload must be a JSON object"}), 400
 
+        payload = command_validators[command](raw_payload)
         command_id = database.queue_command(command, payload)
         return jsonify({"id": command_id, "status": "pending"}), 202
 
     return app
-
-
-def env_int_from_request(name: str, default: int) -> int:
-    value = request.args.get(name)
-    if value is None:
-        return default
-    return int(value)
 
 
 app = create_app()
