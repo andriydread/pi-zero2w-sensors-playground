@@ -10,7 +10,10 @@
   <main class="page">
     <section class="hero">
       <div>
-        <h1>Air Monitor</h1>
+        <div class="hero-topline">
+          <h1>Air Monitor</h1>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle dark mode">Dark mode</button>
+        </div>
       </div>
       <div class="hero-meta">
         <div class="pill" id="collector-running">Collector: --</div>
@@ -178,10 +181,32 @@
           </div>
           <div class="info-list">
             <p><span>Path</span><strong id="database-path">--</strong></p>
+            <p><span>Log File</span><strong id="collector-log-file">--</strong></p>
             <p><span>Deploy</span><strong>Protected from sync delete</strong></p>
           </div>
           <div class="button-row">
             <button id="delete-history-button" class="button-danger" type="button">Delete History</button>
+          </div>
+        </section>
+
+        <section class="control-card">
+          <div class="panel-head">
+            <div class="title-with-help">
+              <h2>Connectivity</h2>
+              <span class="help-chip" tabindex="0">?
+                <span class="help-popover">
+                  <strong>Connectivity</strong>
+                  <p>Shows the collector's last Wi-Fi probe including interface state, carrier, signal, and whether an outbound socket connection succeeded.</p>
+                </span>
+              </span>
+            </div>
+          </div>
+          <div class="info-list">
+            <p><span>Interface</span><strong id="network-interface">--</strong></p>
+            <p><span>Status</span><strong id="network-status">--</strong></p>
+            <p><span>Signal</span><strong id="network-signal">--</strong></p>
+            <p><span>Last Success</span><strong id="network-last-success">--</strong></p>
+            <p><span>Last Error</span><strong id="network-last-error">--</strong></p>
           </div>
         </section>
       </div>
@@ -207,6 +232,22 @@
         <p id="command-status">No command submitted yet.</p>
       </div>
       <div class="command-list" id="command-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div class="title-with-help">
+          <h2>Recent Events</h2>
+          <span class="help-chip" tabindex="0">?
+            <span class="help-popover">
+              <strong>Purpose</strong>
+              <p>Shows recent diagnostic events captured by the collector and dashboard so failures can be reviewed after the fact.</p>
+            </span>
+          </span>
+        </div>
+        <p id="events-status">Latest persisted diagnostics.</p>
+      </div>
+      <div class="event-list" id="event-list"></div>
     </section>
   </main>
   <script src="{{ url_for('static', filename='dashboard.js') }}"></script>

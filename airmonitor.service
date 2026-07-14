@@ -13,6 +13,8 @@ User=pi
 Environment=AIRMONITOR_PARTIAL_UPDATE_INTERVAL=60
 Environment=AIRMONITOR_FULL_UPDATE_INTERVAL=300
 Environment=AIRMONITOR_DATABASE_PATH=/home/pi/air_station/data/airmonitor.db
+Environment=AIRMONITOR_LOG_FILE=/home/pi/air_station/data/logs/collector.log
+Environment=AIRMONITOR_DASHBOARD_LOG_FILE=/home/pi/air_station/data/logs/dashboard.log
 Environment=AIRMONITOR_SCD41_ASC_ENABLED=false
 
 [Install]

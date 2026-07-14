@@ -149,6 +149,8 @@ Read recent logs:
 ```bash
 journalctl -u airmonitor.service -n 100 --no-pager
 journalctl -u airmonitor-web.service -n 100 --no-pager
+tail -n 100 ~/air_station/data/logs/collector.log
+tail -n 100 ~/air_station/data/logs/dashboard.log
 ```
 
 ## Project Layout
@@ -169,6 +171,8 @@ journalctl -u airmonitor-web.service -n 100 --no-pager
 - `SPS30` is started in I2C floating-point measurement mode.
 - The collector stores sensor history in `data/airmonitor.db`.
 - The dashboard reads the same SQLite database and queues commands back to the collector.
+- The collector persists diagnostic events in SQLite (`events` table) and rotating log files under `data/logs/`.
+- The collector performs periodic Wi-Fi/connectivity probes and stores the latest network status in shared state.
 - Weather data is refreshed on its own interval and merged into the same display snapshot.
 
 ## Configuration
@@ -182,11 +186,17 @@ Collector environment variables:
 - `AIRMONITOR_FULL_UPDATE_INTERVAL`
 - `AIRMONITOR_WEATHER_UPDATE_INTERVAL`
 - `AIRMONITOR_COMMAND_POLL_INTERVAL`
+- `AIRMONITOR_CONNECTIVITY_CHECK_INTERVAL`
+- `AIRMONITOR_CONNECTIVITY_TARGET_HOST`
+- `AIRMONITOR_CONNECTIVITY_TARGET_PORT`
+- `AIRMONITOR_CONNECTIVITY_TIMEOUT`
+- `AIRMONITOR_WIFI_INTERFACE`
 - `AIRMONITOR_FONT_PATH`
 - `AIRMONITOR_WEATHER_LAT`
 - `AIRMONITOR_WEATHER_LON`
 - `AIRMONITOR_DISPLAY_ROTATION`
 - `AIRMONITOR_DATABASE_PATH`
+- `AIRMONITOR_LOG_FILE`
 - `AIRMONITOR_SCD41_ASC_ENABLED`
 
 Dashboard environment variables:
@@ -194,5 +204,6 @@ Dashboard environment variables:
 - `AIRMONITOR_DATABASE_PATH`
 - `AIRMONITOR_WEB_HOST`
 - `AIRMONITOR_WEB_PORT`
+- `AIRMONITOR_DASHBOARD_LOG_FILE`
 
 If you want to override them for a service, add `Environment=` lines or an `EnvironmentFile=` entry in the relevant systemd service.

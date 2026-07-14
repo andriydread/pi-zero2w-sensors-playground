@@ -78,6 +78,8 @@ const chartConfigs = {
   },
 };
 let selectedHours = 24;
+let lastSummary = null;
+let lastHistoryRows = null;
 
 function dynamicFromZero(values, minSpan) {
   const rawMax = Math.max(...values, 0);
@@ -107,6 +109,16 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function themeColors() {
+  const styles = getComputedStyle(document.documentElement);
+  return {
+    chartGrid: styles.getPropertyValue('--chart-grid').trim(),
+    chartGridSoft: styles.getPropertyValue('--chart-grid-soft').trim(),
+    chartLabel: styles.getPropertyValue('--chart-label').trim(),
+    paper: styles.getPropertyValue('--paper').trim(),
+  };
 }
 
 function calculateAqi(pm25, pm10) {
@@ -209,11 +221,13 @@ function formatInterval(seconds) {
 }
 
 function renderSummary(summary) {
+  lastSummary = summary;
   const metrics = getLiveMetrics(summary);
   const aqi = calculateAqi(metrics.pm25, metrics.pm10);
   const collector = summary.collector_status?.value || {};
   const health = sensorHealthSummary(collector);
   const calibration = summary.scd41_last_calibration?.value || {};
+  const network = collector.sensors?.network || {};
 
   document.getElementById('metric-co2').textContent = metricFormats.co2(metrics.co2);
   document.getElementById('metric-temp').textContent = metricFormats.temp(metrics.temp);
@@ -233,14 +247,22 @@ function renderSummary(summary) {
   document.getElementById('collector-health').textContent = health.pill;
   document.getElementById('scd41-asc-enabled').checked = !!collector.scd41_asc_enabled;
   document.getElementById('database-path').textContent = collector.database_path || '--';
+  document.getElementById('collector-log-file').textContent = collector.log_file || '--';
   document.getElementById('auto-clean-current').textContent = formatInterval(collector.sps30_auto_cleaning_interval_seconds);
   document.getElementById('scd41-last-calibration').textContent = formatTimestamp(calibration.calibrated_at || collector.sensors?.scd41?.last_calibration_at);
   document.getElementById('scd41-recent-samples').textContent = String(collector.scd41_recent_valid_samples ?? '--');
+
+  document.getElementById('network-interface').textContent = network.interface || '--';
+  document.getElementById('network-status').textContent = `healthy=${network.healthy ? 'yes' : 'no'} | operstate=${network.operstate || '--'} | carrier=${network.carrier || '--'}`;
+  document.getElementById('network-signal').textContent = network.signal_level_dbm == null ? '--' : `${network.signal_level_dbm} dBm`;
+  document.getElementById('network-last-success').textContent = formatTimestamp(network.last_success_at);
+  document.getElementById('network-last-error').textContent = network.last_error || '--';
 
   const weather = summary.latest_weather?.value || {};
   document.getElementById('weather-updated').textContent = `Updated: ${formatTimestamp(summary.latest_weather?.updated_at)}`;
   renderWeather(weather);
   renderCommands(summary.recent_commands || []);
+  renderEvents(summary.recent_events || []);
 }
 
 function renderWeather(weather) {
@@ -272,6 +294,10 @@ function renderWeather(weather) {
   }
 }
 
+function prettyJson(value) {
+  return JSON.stringify(value || {}, null, 2);
+}
+
 function renderCommands(commands) {
   const list = document.getElementById('command-list');
   list.innerHTML = '';
@@ -288,8 +314,34 @@ function renderCommands(commands) {
         <span class="command-status-${escapeHtml(command.status)}">${escapeHtml(command.status)}</span>
       </header>
       <p>Created: ${escapeHtml(formatTimestamp(command.created_at))}</p>
-      <p>Payload: ${escapeHtml(JSON.stringify(command.payload || {}))}</p>
-      <p>Result: ${escapeHtml(JSON.stringify(command.result || {}))}</p>
+      <p>Payload:</p>
+      <pre>${escapeHtml(prettyJson(command.payload))}</pre>
+      <p>Result:</p>
+      <pre>${escapeHtml(prettyJson(command.result))}</pre>
+    `;
+    list.appendChild(item);
+  }
+}
+
+function renderEvents(events) {
+  const list = document.getElementById('event-list');
+  list.innerHTML = '';
+  document.getElementById('events-status').textContent = events.length ? `Showing ${events.length} latest events.` : 'No events recorded yet.';
+  if (!events.length) {
+    list.innerHTML = '<div class="empty-state">No diagnostics recorded yet.</div>';
+    return;
+  }
+  for (const event of events) {
+    const item = document.createElement('article');
+    item.className = 'event-item';
+    item.innerHTML = `
+      <header>
+        <span>${escapeHtml(event.source)} / ${escapeHtml(event.event_type)}</span>
+        <span class="event-level event-level-${escapeHtml(event.level)}">${escapeHtml(event.level)}</span>
+      </header>
+      <p>${escapeHtml(event.message)}</p>
+      <p>${escapeHtml(formatTimestamp(event.created_at))}</p>
+      <pre>${escapeHtml(prettyJson(event.details))}</pre>
     `;
     list.appendChild(item);
   }
@@ -308,9 +360,10 @@ function renderLineChart(svgId, rows, key, config) {
   const tooltip = document.getElementById(`tooltip-${svgId}`);
   const rowsWithTime = rows.filter((row) => row.timestamp_ts != null);
   const points = rowsWithTime.filter((row) => row[key] != null);
+  const colors = themeColors();
 
   if (!points.length) {
-    svg.innerHTML = '<text x="24" y="40" fill="#59636e" font-size="16">No data yet</text>';
+    svg.innerHTML = `<text x="24" y="40" fill="${colors.chartLabel}" font-size="16">No data yet</text>`;
     tooltip.style.opacity = '0';
     chartState.delete(svgId);
     return;
@@ -339,16 +392,16 @@ function renderLineChart(svgId, rows, key, config) {
   const horizontalGrid = yTicks.map((tick) => {
     const y = padding.top + (height - padding.top - padding.bottom) * (1 - ((tick - yBounds.min) / yRange));
     return `
-      <line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="#d7d1c3" stroke-dasharray="4 4" />
-      <text x="8" y="${y + 4}" fill="#59636e" font-size="12">${tick.toFixed(1)}</text>
+      <line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="${colors.chartGrid}" stroke-dasharray="4 4" />
+      <text x="8" y="${y + 4}" fill="${colors.chartLabel}" font-size="12">${tick.toFixed(1)}</text>
     `;
   }).join('');
 
   const verticalTicks = xTicks.map((tick) => {
     const x = padding.left + ((tick - xMin) / (xMax - xMin)) * (width - padding.left - padding.right);
     return `
-      <line x1="${x}" y1="${padding.top}" x2="${x}" y2="${height - padding.bottom}" stroke="#ece6d9" />
-      <text x="${x}" y="${height - 12}" text-anchor="middle" fill="#59636e" font-size="12">${formatAxisTimestampFromSeconds(tick)}</text>
+      <line x1="${x}" y1="${padding.top}" x2="${x}" y2="${height - padding.bottom}" stroke="${colors.chartGridSoft}" />
+      <text x="${x}" y="${height - 12}" text-anchor="middle" fill="${colors.chartLabel}" font-size="12">${formatAxisTimestampFromSeconds(tick)}</text>
     `;
   }).join('');
 
@@ -357,7 +410,7 @@ function renderLineChart(svgId, rows, key, config) {
     ${horizontalGrid}
     ${verticalTicks}
     <line id="crosshair-${svgId}" x1="0" y1="${padding.top}" x2="0" y2="${height - padding.bottom}" stroke="${config.color}" stroke-width="1.5" stroke-dasharray="4 4" opacity="0"></line>
-    <circle id="focus-${svgId}" cx="0" cy="0" r="5" fill="${config.color}" stroke="#fffdf7" stroke-width="2" opacity="0"></circle>
+    <circle id="focus-${svgId}" cx="0" cy="0" r="5" fill="${config.color}" stroke="${colors.paper}" stroke-width="2" opacity="0"></circle>
     <polyline fill="none" stroke="${config.color}" stroke-width="3" points="${polyline}"></polyline>
   `;
 
@@ -428,14 +481,14 @@ async function fetchSummary() {
 
 async function fetchHistory() {
   const data = await fetchJson(`/api/history?hours=${selectedHours}`);
-  const rows = data.rows || [];
-  const aqiRows = rows.map((row) => ({ ...row, aqi: calculateAqi(row.pm25, row.pm10) }));
-  renderLineChart('chart-temp', rows, 'temp', chartConfigs.temp);
-  renderLineChart('chart-humid', rows, 'humid', chartConfigs.humid);
-  renderLineChart('chart-co2', rows, 'co2', chartConfigs.co2);
+  lastHistoryRows = data.rows || [];
+  const aqiRows = lastHistoryRows.map((row) => ({ ...row, aqi: calculateAqi(row.pm25, row.pm10) }));
+  renderLineChart('chart-temp', lastHistoryRows, 'temp', chartConfigs.temp);
+  renderLineChart('chart-humid', lastHistoryRows, 'humid', chartConfigs.humid);
+  renderLineChart('chart-co2', lastHistoryRows, 'co2', chartConfigs.co2);
   renderLineChart('chart-aqi', aqiRows, 'aqi', chartConfigs.aqi);
-  renderLineChart('chart-pm25', rows, 'pm25', chartConfigs.pm25);
-  renderLineChart('chart-pm10', rows, 'pm10', chartConfigs.pm10);
+  renderLineChart('chart-pm25', lastHistoryRows, 'pm25', chartConfigs.pm25);
+  renderLineChart('chart-pm10', lastHistoryRows, 'pm10', chartConfigs.pm10);
 }
 
 async function submitCommand(command, payload = {}) {
@@ -457,6 +510,31 @@ async function deleteHistory() {
   const data = await fetchJson('/api/history', { method: 'DELETE' });
   document.getElementById('command-status').textContent = data.status;
   await refreshAll();
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  window.localStorage.setItem('airmonitor-theme', theme);
+  document.getElementById('theme-toggle').textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
+  if (lastHistoryRows) {
+    const aqiRows = lastHistoryRows.map((row) => ({ ...row, aqi: calculateAqi(row.pm25, row.pm10) }));
+    renderLineChart('chart-temp', lastHistoryRows, 'temp', chartConfigs.temp);
+    renderLineChart('chart-humid', lastHistoryRows, 'humid', chartConfigs.humid);
+    renderLineChart('chart-co2', lastHistoryRows, 'co2', chartConfigs.co2);
+    renderLineChart('chart-aqi', aqiRows, 'aqi', chartConfigs.aqi);
+    renderLineChart('chart-pm25', lastHistoryRows, 'pm25', chartConfigs.pm25);
+    renderLineChart('chart-pm10', lastHistoryRows, 'pm10', chartConfigs.pm10);
+  }
+}
+
+function initTheme() {
+  const preferred = window.localStorage.getItem('airmonitor-theme')
+    || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  setTheme(preferred);
+  document.getElementById('theme-toggle').addEventListener('click', () => {
+    const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+  });
 }
 
 function installActions() {
@@ -526,18 +604,30 @@ function installActions() {
       document.getElementById('command-status').textContent = error.message;
     }
   });
-
-  ['chart-temp', 'chart-humid', 'chart-co2', 'chart-aqi', 'chart-pm25', 'chart-pm10'].forEach(installChartHover);
 }
 
 async function refreshAll() {
+  await Promise.all([fetchSummary(), fetchHistory()]);
+}
+
+function installRefreshLoop() {
+  window.setInterval(async () => {
+    try {
+      await refreshAll();
+    } catch (error) {
+      document.getElementById('command-status').textContent = error.message;
+    }
+  }, 10000);
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
+  initTheme();
+  ['chart-temp', 'chart-humid', 'chart-co2', 'chart-aqi', 'chart-pm25', 'chart-pm10'].forEach(installChartHover);
+  installActions();
   try {
-    await Promise.all([fetchSummary(), fetchHistory()]);
+    await refreshAll();
   } catch (error) {
     document.getElementById('command-status').textContent = error.message;
   }
-}
-
-installActions();
-refreshAll();
-setInterval(refreshAll, 15000);
+  installRefreshLoop();
+});

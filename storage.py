@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 METRIC_FIELDS = ("co2", "temp", "humid", "pm1", "pm25", "pm4", "pm10", "tps")
 COMMAND_STATUSES = {"pending", "running", "succeeded", "failed"}
+EVENT_LEVELS = {"debug", "info", "warning", "error", "critical"}
 MIN_VALID_CO2_PPM = 350
 VALID_TEMPERATURE_RANGE = (-40.0, 85.0)
 VALID_HUMIDITY_RANGE = (0.0, 100.0)
@@ -98,6 +99,18 @@ class AirMonitorDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_commands_status_created_at
                     ON commands(status, created_at);
+
+                CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    level TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    details TEXT,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_events_created_at
+                    ON events(created_at DESC, id DESC);
                 """
             )
             connection.execute(
@@ -240,6 +253,35 @@ class AirMonitorDatabase:
                 (status, json.dumps(result), timestamp, command_id),
             )
 
+    def insert_event(
+        self,
+        level: str,
+        source: str,
+        event_type: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        normalized_level = str(level).strip().lower()
+        if normalized_level not in EVENT_LEVELS:
+            raise ValueError("invalid event level")
+        timestamp = self._now_ts()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO events(level, source, event_type, message, details, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_level,
+                    str(source).strip(),
+                    str(event_type).strip(),
+                    str(message),
+                    json.dumps(details or {}),
+                    timestamp,
+                ),
+            )
+            return int(cursor.lastrowid)
+
     def get_recent_commands(self, limit: int = 20) -> List[Dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -260,6 +302,48 @@ class AirMonitorDatabase:
                 }
             )
         return commands
+
+    def get_recent_events(
+        self,
+        limit: int = 100,
+        *,
+        source: Optional[str] = None,
+        level: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if level:
+            clauses.append("level = ?")
+            params.append(level.strip().lower())
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, level, source, event_type, message, details, created_at
+                FROM events
+                {where_sql}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "level": row["level"],
+                "source": row["source"],
+                "event_type": row["event_type"],
+                "message": row["message"],
+                "details": self._decode_json(row["details"], {}),
+                "created_at": self._to_iso(row["created_at"]),
+                "created_at_ts": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def get_latest_measurement(self) -> Optional[Dict[str, Any]]:
         with self._connect() as connection:
@@ -326,6 +410,7 @@ class AirMonitorDatabase:
             "collector_status": self.get_state("collector_status"),
             "scd41_last_calibration": self.get_state("scd41_last_calibration"),
             "recent_commands": self.get_recent_commands(),
+            "recent_events": self.get_recent_events(limit=50),
         }
 
     def _measurement_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:

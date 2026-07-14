@@ -1,11 +1,16 @@
+import logging
 import os
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
+from logging_utils import configure_logging
 from storage import AirMonitorDatabase
 
+
+LOGGER = logging.getLogger("airmonitor.dashboard")
 
 CommandValidator = Callable[[Dict[str, Any]], Dict[str, Any]]
 
@@ -109,6 +114,7 @@ def create_app() -> Flask:
     @app.errorhandler(ValueError)
     def handle_value_error(exc: ValueError):
         if request.path.startswith("/api/"):
+            LOGGER.warning("Validation error on %s: %s", request.path, exc)
             return jsonify({"error": str(exc)}), 400
         raise exc
 
@@ -119,7 +125,15 @@ def create_app() -> Flask:
         return "Not Found", 404
 
     @app.errorhandler(500)
-    def handle_server_error(_exc):
+    def handle_server_error(exc):
+        LOGGER.exception("Unhandled server error on %s", request.path)
+        database.insert_event(
+            "error",
+            "dashboard",
+            "server_error",
+            f"Unhandled server error on {request.path}",
+            {"traceback": traceback.format_exc()},
+        )
         if request.path.startswith("/api/"):
             return jsonify({"error": "internal server error"}), 500
         return "Internal Server Error", 500
@@ -156,9 +170,24 @@ def create_app() -> Flask:
             }
         )
 
+    @app.get("/api/events")
+    def api_events() -> Any:
+        limit = max(1, min(parse_int(request.args.get("limit", 50), "limit"), 200))
+        source = request.args.get("source") or None
+        level = request.args.get("level") or None
+        return jsonify({"events": database.get_recent_events(limit=limit, source=source, level=level)})
+
     @app.delete("/api/history")
     def api_delete_history() -> Any:
         deleted_rows = database.delete_history()
+        LOGGER.warning("Deleted %s history rows via dashboard", deleted_rows)
+        database.insert_event(
+            "warning",
+            "dashboard",
+            "history_deleted",
+            f"Deleted {deleted_rows} history rows via dashboard",
+            {"deleted_rows": deleted_rows, "remote_addr": request.remote_addr},
+        )
         return jsonify({"status": f"Deleted {deleted_rows} history rows."})
 
     @app.post("/api/commands")
@@ -177,11 +206,26 @@ def create_app() -> Flask:
 
         payload = command_validators[command](raw_payload)
         command_id = database.queue_command(command, payload)
+        LOGGER.info("Queued command %s #%s", command, command_id)
+        database.insert_event(
+            "info",
+            "dashboard",
+            "command_queued",
+            f"Queued command {command}",
+            {
+                "id": command_id,
+                "command": command,
+                "payload": payload,
+                "remote_addr": request.remote_addr,
+            },
+        )
         return jsonify({"id": command_id, "status": "pending"}), 202
 
     return app
 
 
+LOG_FILE = env_str("AIRMONITOR_DASHBOARD_LOG_FILE", "data/logs/dashboard.log")
+LOGGER = configure_logging("airmonitor.dashboard", log_file=LOG_FILE)
 app = create_app()
 
 
