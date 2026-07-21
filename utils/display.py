@@ -3,6 +3,7 @@ Display Renderer Utility
 Generates the 1-bit Black/White Image to be pushed to the E-Paper display.
 """
 
+import logging
 import os
 from datetime import datetime
 
@@ -10,8 +11,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 from utils.aqi import calculate_aqi, get_aqi_category, get_co2_category
 
+LOGGER = logging.getLogger("airmonitor")
+
 # Location of icon PNGs
-THEME_DIR = "icons"
+ICONS_DIR = os.path.join("assets", "icons")
 
 ACTIVE_ICON_MAP = {
     0: "sun.png",
@@ -62,6 +65,42 @@ def draw_right_text(draw, text, font, width, x_pad, y_pos):
     draw.text((width - text_w - x_pad, y_pos), text, font=font, fill=0)
 
 
+# --- Font Loading ---
+
+_FONT_SIZES = (36, 24, 18, 16, 14)  # huge, large, medium, small, extra-small
+_font_cache = {}
+
+
+def _load_fonts(font_path):
+    """Load the display fonts once and cache them.
+
+    Falls back to common Pi OS fonts, then to Pillow's built-in bitmap font.
+    """
+    if font_path in _font_cache:
+        return _font_cache[font_path]
+
+    paths_to_try = [
+        font_path,
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]
+    fonts = None
+    for path in paths_to_try:
+        if path and os.path.exists(path):
+            try:
+                fonts = tuple(ImageFont.truetype(path, size) for size in _FONT_SIZES)
+                break
+            except Exception as exc:
+                LOGGER.warning("Failed to load font %s: %s", path, exc)
+
+    if fonts is None:
+        LOGGER.warning("No TrueType font available; using Pillow's default bitmap font")
+        fonts = (ImageFont.load_default(),) * len(_FONT_SIZES)
+
+    _font_cache[font_path] = fonts
+    return fonts
+
+
 # --- Main Render Pipeline ---
 
 
@@ -72,29 +111,8 @@ def create_display_image(width, height, data, font_path=None):
     image = Image.new("1", (width, height), 255)
     draw = ImageDraw.Draw(image)
 
-    # Attempt to load fonts. Falls back to default Pi OS fonts if a custom one isn't provided.
-    font_huge = font_lg = font_md = font_sm = font_xs = None
-    paths_to_try = [
-        font_path,
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-    ]
-
-    for path in paths_to_try:
-        if path and os.path.exists(path):
-            try:
-                font_huge = ImageFont.truetype(path, 36)
-                font_lg = ImageFont.truetype(path, 24)
-                font_md = ImageFont.truetype(path, 18)
-                font_sm = ImageFont.truetype(path, 16)
-                font_xs = ImageFont.truetype(path, 14)
-                break
-            except Exception as e:
-                print(f"Failed to load font {path}: {e}")
-
-    if font_huge is None:
-        print("All TrueType fonts failed. Falling back to default blocky font.")
-        font_huge = font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
+    fonts = _load_fonts(font_path)
+    font_huge, font_lg, font_md, font_sm, font_xs = fonts
 
     # Values
     if isinstance(data.get("pm25"), (int, float)) and isinstance(
@@ -173,7 +191,7 @@ def create_display_image(width, height, data, font_path=None):
         # Process and Draw Weather Icon
         if wmo_code is not None:
             icon_file = ACTIVE_ICON_MAP.get(wmo_code, "sun.png")
-            icon_path = os.path.join(THEME_DIR, icon_file)
+            icon_path = os.path.join(ICONS_DIR, icon_file)
 
             try:
                 if os.path.exists(icon_path):
@@ -199,8 +217,8 @@ def create_display_image(width, height, data, font_path=None):
                         [icon_x, icon_y, icon_x + icon_size, icon_y + icon_size],
                         outline=0,
                     )
-            except Exception as e:
-                print(f"Error drawing icon {icon_path}: {e}")
+            except Exception as exc:
+                LOGGER.warning("Error drawing icon %s: %s", icon_path, exc)
         else:
             draw.rectangle(
                 [icon_x, icon_y, icon_x + icon_size, icon_y + icon_size], outline=0

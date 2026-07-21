@@ -1,0 +1,365 @@
+"""SQLite storage shared by the collector and the dashboard.
+
+Both processes open the same database file. WAL mode makes that safe:
+the collector writes measurements/state, the dashboard reads them and
+queues commands back.
+
+Tables (schema is unchanged from earlier versions, so an existing
+database keeps working):
+
+- measurements  one row per sensor sample (raw history for charts)
+- state         small JSON documents keyed by name (latest snapshot,
+                collector status, latest weather, ...)
+- commands      command queue from the dashboard to the collector
+- events        diagnostic event log shown on the dashboard
+"""
+
+import json
+import sqlite3
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+METRIC_FIELDS = ("co2", "temp", "humid", "pm1", "pm25", "pm4", "pm10", "tps")
+
+# Values outside these ranges are stored as NULL instead of garbage.
+MIN_VALID_CO2_PPM = 350
+VALID_TEMPERATURE = (-40.0, 85.0)
+VALID_HUMIDITY = (0.0, 100.0)
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS measurements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at INTEGER NOT NULL,
+    co2 INTEGER,
+    temp REAL,
+    humid REAL,
+    pm1 REAL,
+    pm25 REAL,
+    pm4 REAL,
+    pm10 REAL,
+    tps REAL
+);
+CREATE INDEX IF NOT EXISTS idx_measurements_recorded_at
+    ON measurements(recorded_at);
+
+CREATE TABLE IF NOT EXISTS state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command TEXT NOT NULL,
+    payload TEXT,
+    status TEXT NOT NULL,
+    result TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commands_status_created_at
+    ON commands(status, created_at);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT NOT NULL,
+    source TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    details TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_created_at
+    ON events(created_at DESC, id DESC);
+"""
+
+
+def _clean_value(field: str, value: Any) -> Optional[float]:
+    """Round a raw reading and drop it (return None) when it is implausible."""
+    if value is None:
+        return None
+    number = float(value)
+    if field == "co2":
+        number = int(round(number))
+        return number if number >= MIN_VALID_CO2_PPM else None
+    number = round(number, 2)
+    if field == "temp":
+        return number if VALID_TEMPERATURE[0] <= number <= VALID_TEMPERATURE[1] else None
+    if field == "humid":
+        return number if VALID_HUMIDITY[0] <= number <= VALID_HUMIDITY[1] else None
+    # particulate matter fields: must not be negative
+    return number if number >= 0 else None
+
+
+def _to_iso(timestamp: Optional[int]) -> Optional[str]:
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _from_json(text: Optional[str], fallback: Any = None) -> Any:
+    if text is None:
+        return fallback
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return fallback
+
+
+class AirMonitorDatabase:
+    """One instance = one open connection, safe to share between threads."""
+
+    def __init__(self, path: str):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._connection = sqlite3.connect(
+            self.path, timeout=10, isolation_level=None, check_same_thread=False
+        )
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA busy_timeout=10000")
+        self._connection.executescript(_SCHEMA)
+        # Commands left "running" by a crashed collector will never finish.
+        self._execute(
+            "UPDATE commands SET status='failed', "
+            "result='\"Collector restarted before completing command\"', updated_at=? "
+            "WHERE status='running'",
+            (self._now(),),
+        )
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
+
+    @staticmethod
+    def _now() -> int:
+        return int(time.time())
+
+    def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        with self._lock:
+            return self._connection.execute(sql, params)
+
+    # --- Measurements ------------------------------------------------------
+
+    def insert_measurement(self, values: Dict[str, Optional[float]]) -> None:
+        cleaned = {field: _clean_value(field, values.get(field)) for field in METRIC_FIELDS}
+        columns = ", ".join(METRIC_FIELDS)
+        placeholders = ", ".join("?" for _ in METRIC_FIELDS)
+        self._execute(
+            f"INSERT INTO measurements (recorded_at, {columns}) VALUES (?, {placeholders})",
+            (self._now(), *[cleaned[field] for field in METRIC_FIELDS]),
+        )
+
+    def get_latest_measurement(self) -> Optional[Dict[str, Any]]:
+        row = self._execute(
+            "SELECT * FROM measurements ORDER BY recorded_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        return self._measurement_to_dict(row) if row else None
+
+    def query_history(self, hours: int, bucket_seconds: int) -> List[Dict[str, Any]]:
+        """Average measurements into time buckets for charting."""
+        cutoff = self._now() - max(hours, 1) * 3600
+        averages = ", ".join(f"AVG({field}) AS {field}" for field in METRIC_FIELDS)
+        rows = self._execute(
+            f"""
+            SELECT (recorded_at / ?) * ? AS bucket_ts, {averages}
+            FROM measurements
+            WHERE recorded_at >= ?
+            GROUP BY bucket_ts
+            ORDER BY bucket_ts ASC
+            """,
+            (bucket_seconds, bucket_seconds, cutoff),
+        ).fetchall()
+        return [self._measurement_to_dict(row, ts_column="bucket_ts") for row in rows]
+
+    def delete_history(self) -> int:
+        cursor = self._execute("DELETE FROM measurements")
+        deleted = cursor.rowcount or 0
+        self._execute("VACUUM")
+        return int(deleted)
+
+    def prune(self, keep_measurements_days: int, keep_events_days: int) -> Dict[str, int]:
+        """Delete old rows so the database does not grow forever. 0 = keep all."""
+        result = {"measurements": 0, "events": 0}
+        if keep_measurements_days > 0:
+            cutoff = self._now() - keep_measurements_days * 86400
+            cursor = self._execute("DELETE FROM measurements WHERE recorded_at < ?", (cutoff,))
+            result["measurements"] = cursor.rowcount or 0
+        if keep_events_days > 0:
+            cutoff = self._now() - keep_events_days * 86400
+            cursor = self._execute("DELETE FROM events WHERE created_at < ?", (cutoff,))
+            result["events"] = cursor.rowcount or 0
+        return result
+
+    def _measurement_to_dict(self, row: sqlite3.Row, ts_column: str = "recorded_at") -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "timestamp": _to_iso(row[ts_column]),
+            "timestamp_ts": row[ts_column],
+        }
+        for field in METRIC_FIELDS:
+            result[field] = _clean_value(field, row[field])
+        return result
+
+    # --- State (small JSON documents) --------------------------------------
+
+    def set_state(self, key: str, value: Any) -> None:
+        self._execute(
+            """
+            INSERT INTO state(key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (key, json.dumps(value), self._now()),
+        )
+
+    def get_state(self, key: str) -> Optional[Dict[str, Any]]:
+        row = self._execute(
+            "SELECT value, updated_at FROM state WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "value": _from_json(row["value"]),
+            "updated_at": _to_iso(row["updated_at"]),
+            "updated_at_ts": row["updated_at"],
+        }
+
+    # --- Command queue (dashboard -> collector) -----------------------------
+
+    def queue_command(self, command: str, payload: Optional[Dict[str, Any]] = None) -> int:
+        now = self._now()
+        cursor = self._execute(
+            "INSERT INTO commands(command, payload, status, created_at, updated_at) "
+            "VALUES (?, ?, 'pending', ?, ?)",
+            (command, json.dumps(payload or {}), now, now),
+        )
+        return int(cursor.lastrowid)
+
+    def claim_pending_commands(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Atomically mark pending commands as running and return them."""
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._connection.execute(
+                    "SELECT id, command, payload FROM commands "
+                    "WHERE status='pending' ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                if rows:
+                    ids = [row["id"] for row in rows]
+                    placeholders = ",".join("?" for _ in ids)
+                    self._connection.execute(
+                        f"UPDATE commands SET status='running', updated_at=? "
+                        f"WHERE id IN ({placeholders})",
+                        (self._now(), *ids),
+                    )
+                self._connection.execute("COMMIT")
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+        return [
+            {
+                "id": row["id"],
+                "command": row["command"],
+                "payload": _from_json(row["payload"], {}),
+            }
+            for row in rows
+        ]
+
+    def complete_command(self, command_id: int, success: bool, result: Any) -> None:
+        self._execute(
+            "UPDATE commands SET status=?, result=?, updated_at=? WHERE id=?",
+            ("succeeded" if success else "failed", json.dumps(result), self._now(), command_id),
+        )
+
+    def get_recent_commands(self, limit: int = 20) -> List[Dict[str, Any]]:
+        rows = self._execute(
+            "SELECT * FROM commands ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "command": row["command"],
+                "payload": _from_json(row["payload"], {}),
+                "status": row["status"],
+                "result": _from_json(row["result"]),
+                "created_at": _to_iso(row["created_at"]),
+                "updated_at": _to_iso(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
+    # --- Event log ----------------------------------------------------------
+
+    def insert_event(
+        self,
+        level: str,
+        source: str,
+        event_type: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._execute(
+            "INSERT INTO events(level, source, event_type, message, details, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                str(level).strip().lower(),
+                str(source).strip(),
+                str(event_type).strip(),
+                str(message),
+                json.dumps(details or {}),
+                self._now(),
+            ),
+        )
+
+    def get_recent_events(
+        self,
+        limit: int = 100,
+        *,
+        source: Optional[str] = None,
+        level: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if level:
+            clauses.append("level = ?")
+            params.append(level.strip().lower())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        rows = self._execute(
+            f"SELECT * FROM events {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "level": row["level"],
+                "source": row["source"],
+                "event_type": row["event_type"],
+                "message": row["message"],
+                "details": _from_json(row["details"], {}),
+                "created_at": _to_iso(row["created_at"]),
+                "created_at_ts": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    # --- Dashboard summary --------------------------------------------------
+
+    def get_dashboard_summary(self) -> Dict[str, Any]:
+        return {
+            "latest_measurement": self.get_latest_measurement(),
+            "latest_measurements": self.get_state("latest_measurements"),
+            "latest_weather": self.get_state("latest_weather"),
+            "latest_display_snapshot": self.get_state("latest_display_snapshot"),
+            "collector_status": self.get_state("collector_status"),
+            "scd41_last_calibration": self.get_state("scd41_last_calibration"),
+            "recent_commands": self.get_recent_commands(),
+            "recent_events": self.get_recent_events(limit=50),
+        }

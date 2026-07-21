@@ -6,8 +6,8 @@ from typing import Any, Callable, Dict
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
-from logging_utils import configure_logging
-from storage import AirMonitorDatabase
+from airmonitor.logging_utils import configure_logging
+from airmonitor.storage import AirMonitorDatabase
 
 
 LOGGER = logging.getLogger("airmonitor.dashboard")
@@ -95,7 +95,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
     database = AirMonitorDatabase(env_str("AIRMONITOR_DATABASE_PATH", "data/airmonitor.db"))
     project_root = Path(__file__).resolve().parents[1]
-    icons_dir = project_root / "icons"
+    icons_dir = project_root / "assets" / "icons"
     command_validators: Dict[str, CommandValidator] = {
         "sps30_force_clean": validate_empty,
         "sps30_set_auto_cleaning_interval": validate_sps30_interval,

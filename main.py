@@ -1,1201 +1,442 @@
+"""Air monitor collector.
+
+Reads the sensors on a schedule, stores history in SQLite, draws the
+e-paper display, and executes commands queued by the web dashboard.
+
+The flow is simple:
+
+    main() -> AirMonitor.run() -> a loop of small periodic tasks
+        collect_sample     every 10s   read sensors, store to SQLite
+        update_display     every 60s   partial e-paper refresh (full every 5 min)
+        fetch_weather      every 30min Open-Meteo forecast
+        process_commands   every 2s    commands from the dashboard
+        check_network      every 30s   Wi-Fi / internet probe
+        prune_database     every 24h   delete old history rows
+"""
+
 import logging
-import os
 import signal
-import socket
 import sys
 import time
-import traceback
-from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import adafruit_scd4x
-import adafruit_sht4x
 import board
 import busio
 import requests
 
-from lib.sps30_i2c import SPS30
+from airmonitor.commands import CommandProcessor
+from airmonitor.config import Config
+from airmonitor.logging_utils import EventLog, configure_logging
+from airmonitor.network import probe_network
+from airmonitor.sensors import Scd41, SensorHealth, Sht41, Sps30, utc_now_iso
+from airmonitor.storage import AirMonitorDatabase
 from lib.uc8253c import UC8253C_SPI
-from logging_utils import configure_logging
-from storage import AirMonitorDatabase
 from utils.display import create_display_image
 from utils.weather import get_weather_forecast
 
-
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 LOGGER = logging.getLogger("airmonitor")
-VALID_TEMPERATURE_RANGE = (-40.0, 85.0)
-VALID_HUMIDITY_RANGE = (0.0, 100.0)
+
+METRICS = ("co2", "temp", "humid", "pm1", "pm25", "pm4", "pm10", "tps")
 
 
-def env_int(name: str, default: int) -> int:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return int(value)
+class PeriodicTask:
+    """Runs a function at a fixed interval; one failure never kills the loop."""
 
+    def __init__(self, name: str, interval_seconds: int, func):
+        self.name = name
+        self.interval = interval_seconds
+        self.func = func
+        self.next_run = time.monotonic()
 
-def env_float(name: str, default: float) -> float:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return float(value)
-
-
-def env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def env_str(name: str, default: str) -> str:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value
-
-
-def env_path(name: str, default: str) -> str:
-    return env_str(name, default)
-
-
-@dataclass(frozen=True)
-class AppConfig:
-    sample_interval_seconds: int = env_int("AIRMONITOR_SAMPLE_INTERVAL", 10)
-    partial_update_interval_seconds: int = env_int(
-        "AIRMONITOR_PARTIAL_UPDATE_INTERVAL", 60
-    )
-    full_update_interval_seconds: int = env_int(
-        "AIRMONITOR_FULL_UPDATE_INTERVAL", 300
-    )
-    weather_update_interval_seconds: int = env_int(
-        "AIRMONITOR_WEATHER_UPDATE_INTERVAL", 1800
-    )
-    command_poll_interval_seconds: int = env_int(
-        "AIRMONITOR_COMMAND_POLL_INTERVAL", 2
-    )
-    connectivity_check_interval_seconds: int = env_int(
-        "AIRMONITOR_CONNECTIVITY_CHECK_INTERVAL", 30
-    )
-    font_path: str = os.getenv("AIRMONITOR_FONT_PATH", "fonts/dejavu-sans-bold.ttf")
-    weather_latitude: float = env_float("AIRMONITOR_WEATHER_LAT", 49.842957)
-    weather_longitude: float = env_float("AIRMONITOR_WEATHER_LON", 24.031111)
-    display_rotation: int = env_int("AIRMONITOR_DISPLAY_ROTATION", 90)
-    database_path: str = os.getenv("AIRMONITOR_DATABASE_PATH", "data/airmonitor.db")
-    log_file: str = env_path("AIRMONITOR_LOG_FILE", "data/logs/collector.log")
-    wifi_interface: str = env_str("AIRMONITOR_WIFI_INTERFACE", "wlan0")
-    connectivity_target_host: str = env_str("AIRMONITOR_CONNECTIVITY_TARGET_HOST", "1.1.1.1")
-    connectivity_target_port: int = env_int("AIRMONITOR_CONNECTIVITY_TARGET_PORT", 53)
-    connectivity_timeout_seconds: int = env_int("AIRMONITOR_CONNECTIVITY_TIMEOUT", 3)
-    scd41_asc_enabled: bool = env_bool("AIRMONITOR_SCD41_ASC_ENABLED", False)
-    minimum_valid_co2_ppm: int = env_int("AIRMONITOR_MIN_VALID_CO2_PPM", 350)
-    measurement_max_age_seconds: int = env_int("AIRMONITOR_MEASUREMENT_MAX_AGE", 45)
-    scd41_calibration_min_runtime_seconds: int = env_int(
-        "AIRMONITOR_SCD41_CALIBRATION_MIN_RUNTIME", 180
-    )
-    scd41_calibration_window_seconds: int = env_int(
-        "AIRMONITOR_SCD41_CALIBRATION_WINDOW", 300
-    )
-    scd41_calibration_min_samples: int = env_int(
-        "AIRMONITOR_SCD41_CALIBRATION_MIN_SAMPLES", 3
-    )
-    scd41_calibration_max_drift_ppm: int = env_int(
-        "AIRMONITOR_SCD41_CALIBRATION_MAX_DRIFT", 30
-    )
-    scd41_calibration_max_reference_delta_ppm: int = env_int(
-        "AIRMONITOR_SCD41_CALIBRATION_MAX_REFERENCE_DELTA", 200
-    )
-    sps30_min_seconds_between_manual_cleans: int = env_int(
-        "AIRMONITOR_SPS30_MIN_SECONDS_BETWEEN_MANUAL_CLEANS", 1800
-    )
-
-    def validate(self) -> None:
-        positive_fields = {
-            "AIRMONITOR_SAMPLE_INTERVAL": self.sample_interval_seconds,
-            "AIRMONITOR_PARTIAL_UPDATE_INTERVAL": self.partial_update_interval_seconds,
-            "AIRMONITOR_FULL_UPDATE_INTERVAL": self.full_update_interval_seconds,
-            "AIRMONITOR_COMMAND_POLL_INTERVAL": self.command_poll_interval_seconds,
-            "AIRMONITOR_CONNECTIVITY_CHECK_INTERVAL": self.connectivity_check_interval_seconds,
-            "AIRMONITOR_MEASUREMENT_MAX_AGE": self.measurement_max_age_seconds,
-            "AIRMONITOR_SCD41_CALIBRATION_MIN_RUNTIME": self.scd41_calibration_min_runtime_seconds,
-            "AIRMONITOR_SCD41_CALIBRATION_WINDOW": self.scd41_calibration_window_seconds,
-            "AIRMONITOR_SCD41_CALIBRATION_MIN_SAMPLES": self.scd41_calibration_min_samples,
-            "AIRMONITOR_CONNECTIVITY_TARGET_PORT": self.connectivity_target_port,
-            "AIRMONITOR_CONNECTIVITY_TIMEOUT": self.connectivity_timeout_seconds,
-        }
-        for name, value in positive_fields.items():
-            if value <= 0:
-                raise ValueError(f"{name} must be greater than 0")
-
-        non_negative_fields = {
-            "AIRMONITOR_MIN_VALID_CO2_PPM": self.minimum_valid_co2_ppm,
-            "AIRMONITOR_SCD41_CALIBRATION_MAX_DRIFT": self.scd41_calibration_max_drift_ppm,
-            "AIRMONITOR_SCD41_CALIBRATION_MAX_REFERENCE_DELTA": self.scd41_calibration_max_reference_delta_ppm,
-            "AIRMONITOR_SPS30_MIN_SECONDS_BETWEEN_MANUAL_CLEANS": self.sps30_min_seconds_between_manual_cleans,
-        }
-        for name, value in non_negative_fields.items():
-            if value < 0:
-                raise ValueError(f"{name} must be 0 or greater")
-
-        if self.full_update_interval_seconds < self.partial_update_interval_seconds:
-            raise ValueError(
-                "AIRMONITOR_FULL_UPDATE_INTERVAL must be greater than or equal to AIRMONITOR_PARTIAL_UPDATE_INTERVAL"
-            )
-
-
-@dataclass
-class SampleBuffer:
-    values: Dict[str, List[float]] = field(
-        default_factory=lambda: {
-            "co2": [],
-            "temp": [],
-            "humid": [],
-            "pm1": [],
-            "pm25": [],
-            "pm4": [],
-            "pm10": [],
-            "tps": [],
-        }
-    )
-
-    def add(self, key: str, value: Optional[float]) -> None:
-        if value is None:
+    def run_if_due(self, now: float, events: EventLog) -> None:
+        if now < self.next_run:
             return
-        self.values[key].append(value)
+        try:
+            self.func()
+        except Exception as exc:
+            events.log(
+                logging.ERROR, self.name, "task_failed", f"{self.name} task failed: {exc}"
+            )
+            LOGGER.exception("%s task failed", self.name)
+        while self.next_run <= now:
+            self.next_run += self.interval
 
-    def averaged_snapshot(self) -> Dict[str, Optional[float]]:
-        snapshot: Dict[str, Optional[float]] = {}
-        for key, samples in self.values.items():
-            if not samples:
-                snapshot[key] = None
+
+class LatestReadings:
+    """Remembers the newest value of every metric and how old it is."""
+
+    def __init__(self, max_age_seconds: int, events: EventLog):
+        self.max_age = max_age_seconds
+        self.events = events
+        self.values: Dict[str, Any] = {}       # metric -> value
+        self.seen_monotonic: Dict[str, float] = {}
+        self.seen_iso: Dict[str, str] = {}
+        self.stale_reported: Dict[str, bool] = {}
+
+    def record(self, metric: str, value: float) -> None:
+        if self.stale_reported.get(metric):
+            self.events.log(
+                logging.INFO, metric, "measurement_recovered", f"{metric} measurements resumed"
+            )
+        self.values[metric] = value
+        self.seen_monotonic[metric] = time.monotonic()
+        self.seen_iso[metric] = utc_now_iso()
+        self.stale_reported[metric] = False
+
+    def report_stale(self, metric: str, source: str) -> None:
+        """Log once when a metric stops updating."""
+        seen = self.seen_monotonic.get(metric)
+        if seen is None or self.stale_reported.get(metric):
+            return
+        age = time.monotonic() - seen
+        if age <= self.max_age:
+            return
+        self.stale_reported[metric] = True
+        self.events.log(
+            logging.WARNING, source, "measurement_stale",
+            f"{metric} measurement is stale after {int(age)}s",
+            {"metric": metric, "age_seconds": int(age), "last_value": self.values.get(metric)},
+        )
+
+    def fresh_snapshot(self) -> Dict[str, Any]:
+        """Current values with anything older than max_age replaced by None."""
+        now = time.monotonic()
+        snapshot: Dict[str, Any] = {}
+        newest_iso = None
+        newest_monotonic = None
+        for metric in METRICS:
+            seen = self.seen_monotonic.get(metric)
+            if seen is None or now - seen > self.max_age:
+                snapshot[metric] = None
                 continue
-
-            average = sum(samples) / len(samples)
-            if key == "co2":
-                snapshot[key] = int(round(average))
-            elif key in {"temp", "humid", "tps"}:
-                snapshot[key] = round(average, 1)
-            else:
-                snapshot[key] = round(average, 2)
-
-        self.clear()
-        snapshot["timestamp"] = datetime.now().isoformat(timespec="seconds")
+            snapshot[metric] = self.values[metric]
+            if newest_monotonic is None or seen > newest_monotonic:
+                newest_monotonic = seen
+                newest_iso = self.seen_iso[metric]
+        snapshot["timestamp"] = newest_iso
         return snapshot
 
-    def clear(self) -> None:
-        for samples in self.values.values():
-            samples.clear()
+
+class SampleBuffer:
+    """Collects samples between display refreshes and averages them."""
+
+    def __init__(self):
+        self.samples: Dict[str, List[float]] = {metric: [] for metric in METRICS}
+
+    def add(self, metric: str, value: float) -> None:
+        self.samples[metric].append(value)
+
+    def take_averages(self) -> Dict[str, Optional[float]]:
+        """Return the averaged values and start a new averaging window."""
+        averages: Dict[str, Any] = {}
+        for metric, values in self.samples.items():
+            if not values:
+                averages[metric] = None
+                continue
+            average = sum(values) / len(values)
+            if metric == "co2":
+                averages[metric] = int(round(average))
+            elif metric in ("temp", "humid", "tps"):
+                averages[metric] = round(average, 1)
+            else:
+                averages[metric] = round(average, 2)
+            values.clear()
+        return averages
 
 
-class AmbientSensor:
-    def __init__(self, device, name: str):
-        self.device = device
-        self.name = name
-
-    @property
-    def temperature(self) -> float:
-        return float(self.device.temperature)
-
-    @property
-    def relative_humidity(self) -> float:
-        return float(self.device.relative_humidity)
-
-
-class AirMonitorApp:
-    def __init__(self, config: AppConfig):
+class AirMonitor:
+    def __init__(self, config: Config):
         self.config = config
-        self.i2c = None
-        self.scd4x = None
-        self.ambient_sensor: Optional[AmbientSensor] = None
-        self.sps30: Optional[SPS30] = None
-        self.display: Optional[UC8253C_SPI] = None
-        self.weather: Dict[str, Any] = {}
-        self.last_display_snapshot: Optional[Dict[str, Any]] = None
-        self.sample_buffer = SampleBuffer()
-        self.latest_measurements: Dict[str, Optional[float]] = {
-            "co2": None,
-            "temp": None,
-            "humid": None,
-            "pm1": None,
-            "pm25": None,
-            "pm4": None,
-            "pm10": None,
-            "tps": None,
-        }
-        self.latest_measurement_monotonic: Dict[str, Optional[float]] = {
-            key: None for key in self.latest_measurements
-        }
-        self.latest_measurement_iso: Dict[str, Optional[str]] = {
-            key: None for key in self.latest_measurements
-        }
-        self.stale_measurement_flags: Dict[str, bool] = {
-            key: False for key in self.latest_measurements
-        }
-        self.database = AirMonitorDatabase(self.config.database_path)
-        self.scd41_asc_enabled = self.config.scd41_asc_enabled
+        self.database = AirMonitorDatabase(config.database_path)
+        self.events = EventLog(LOGGER, self.database)
+        self.readings = LatestReadings(config.measurement_max_age, self.events)
+        self.buffer = SampleBuffer()
+        self.commands = CommandProcessor(self)
         self.http = requests.Session()
         self.http.headers.update({"User-Agent": "AirMonitor/1.0"})
+
+        self.i2c = None
+        self.scd41: Optional[Scd41] = None
+        self.sht41: Optional[Sht41] = None
+        self.sps30: Optional[Sps30] = None
+        self.display: Optional[UC8253C_SPI] = None
+
+        self.i2c_health = SensorHealth("i2c", self.events)
+        self.display_health = SensorHealth("display", self.events)
+        self.weather_health = SensorHealth("weather", self.events)
+        self.network_state: Dict[str, Any] = {"interface": config.wifi_interface}
+
+        self.weather: Dict[str, Any] = {}
+        self.last_display_snapshot: Optional[Dict[str, Any]] = None
         self.running = True
-        self.started_at = self._utc_now_iso()
+        self.started_at = utc_now_iso()
         self.started_monotonic = time.monotonic()
-        self.scd41_measurement_started_monotonic: Optional[float] = None
-        self.recent_valid_co2_samples: Deque[Tuple[float, float]] = deque()
-        self.sps30_auto_cleaning_interval_seconds: Optional[int] = None
-        self.last_sps30_manual_clean_monotonic: Optional[float] = None
-        self.last_network_status: Optional[Dict[str, Any]] = None
-        self.sensor_state: Dict[str, Dict[str, Any]] = {
-            "i2c": {
-                "available": False,
-                "healthy": False,
-                "last_error": None,
-                "last_event_at": None,
-            },
-            "scd41": {
-                "available": False,
-                "healthy": False,
-                "last_error": None,
-                "last_valid_sample_at": None,
-                "last_invalid_sample_at": None,
-                "consecutive_invalid_samples": 0,
-                "last_calibration_at": None,
-            },
-            "sht41": {
-                "available": False,
-                "healthy": False,
-                "last_error": None,
-                "last_valid_sample_at": None,
-            },
-            "sps30": {
-                "available": False,
-                "healthy": False,
-                "last_error": None,
-                "last_valid_sample_at": None,
-                "last_manual_clean_at": None,
-            },
-            "display": {
-                "available": False,
-                "healthy": False,
-                "last_error": None,
-                "last_refresh_at": None,
-            },
-            "weather": {
-                "available": True,
-                "healthy": True,
-                "last_error": None,
-                "last_success_at": None,
-            },
-            "network": {
-                "available": False,
-                "healthy": False,
-                "last_error": None,
-                "last_checked_at": None,
-                "last_success_at": None,
-                "interface": self.config.wifi_interface,
-                "operstate": None,
-                "carrier": None,
-                "signal_level_dbm": None,
-                "target_host": self.config.connectivity_target_host,
-                "target_port": self.config.connectivity_target_port,
-            },
-        }
 
-    @staticmethod
-    def _utc_now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # --- Setup and teardown -------------------------------------------------
 
-    @staticmethod
-    def _coerce_bool(value: Any, default: bool = False) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"1", "true", "yes", "on"}:
-                return True
-            if normalized in {"0", "false", "no", "off"}:
-                return False
-        if isinstance(value, (int, float)):
-            return bool(value)
-        raise ValueError("boolean payload value is invalid")
-
-    @staticmethod
-    def _coerce_int(value: Any, field_name: str) -> int:
-        if isinstance(value, bool):
-            raise ValueError(f"{field_name} must be an integer")
+    def setup(self) -> None:
+        LOGGER.info("Initializing I2C bus")
         try:
-            return int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{field_name} must be an integer") from exc
-
-    def _log_event(
-        self,
-        level: int,
-        source: str,
-        event_type: str,
-        message: str,
-        details: Optional[Dict[str, Any]] = None,
-        *,
-        exc_info: bool = False,
-    ) -> None:
-        LOGGER.log(level, "%s [%s] %s", source, event_type, message, exc_info=exc_info)
-        try:
-            self.database.insert_event(
-                logging.getLevelName(level).lower(),
-                source,
-                event_type,
-                message,
-                details or {},
-            )
-        except Exception:
-            LOGGER.exception("Failed to persist event log")
-
-    def _set_sensor_state(
-        self,
-        sensor: str,
-        *,
-        available: Optional[bool] = None,
-        healthy: Optional[bool] = None,
-        error: Optional[str] = None,
-        stamp_key: Optional[str] = None,
-        log_changes: bool = True,
-    ) -> None:
-        state = self.sensor_state[sensor]
-        previous = {
-            "available": state.get("available"),
-            "healthy": state.get("healthy"),
-            "last_error": state.get("last_error"),
-        }
-        if available is not None:
-            state["available"] = available
-        if healthy is not None:
-            state["healthy"] = healthy
-        state["last_error"] = error
-        if stamp_key:
-            state[stamp_key] = self._utc_now_iso()
-        state["last_event_at"] = self._utc_now_iso()
-
-        changed = (
-            previous["available"] != state.get("available")
-            or previous["healthy"] != state.get("healthy")
-            or previous["last_error"] != state.get("last_error")
-        )
-        if changed and log_changes:
-            level = logging.INFO if state.get("healthy") else logging.WARNING
-            message = (
-                f"{sensor} state changed: available={state.get('available')} healthy={state.get('healthy')}"
-            )
-            if error:
-                message = f"{message}; error={error}"
-            self._log_event(
-                level,
-                sensor,
-                "state_change",
-                message,
-                {
-                    "available": state.get("available"),
-                    "healthy": state.get("healthy"),
-                    "error": error,
-                },
-            )
-
-    def _record_measurement(
-        self,
-        key: str,
-        value: float,
-        sample: Dict[str, Optional[float]],
-        recorded_at_iso: str,
-    ) -> None:
-        now = time.monotonic()
-        was_stale = self.stale_measurement_flags.get(key, False)
-        self.latest_measurements[key] = value
-        self.latest_measurement_monotonic[key] = now
-        self.latest_measurement_iso[key] = recorded_at_iso
-        self.stale_measurement_flags[key] = False
-        sample[key] = value
-        self.sample_buffer.add(key, value)
-        if was_stale:
-            self._log_event(
-                logging.INFO,
-                key,
-                "measurement_recovered",
-                f"{key} measurements resumed",
-                {"value": value, "recorded_at": recorded_at_iso},
-            )
-
-    def _trim_recent_co2_samples(self, now_monotonic: Optional[float] = None) -> None:
-        now = now_monotonic if now_monotonic is not None else time.monotonic()
-        while self.recent_valid_co2_samples and now - self.recent_valid_co2_samples[0][0] > self.config.scd41_calibration_window_seconds:
-            self.recent_valid_co2_samples.popleft()
-
-    def _fresh_measurements_snapshot(self) -> Dict[str, Any]:
-        now = time.monotonic()
-        payload: Dict[str, Any] = {}
-        freshest_monotonic: Optional[float] = None
-        freshest_iso: Optional[str] = None
-        for key, value in self.latest_measurements.items():
-            seen_at = self.latest_measurement_monotonic[key]
-            seen_at_iso = self.latest_measurement_iso[key]
-            if (
-                value is None
-                or seen_at is None
-                or seen_at_iso is None
-                or now - seen_at > self.config.measurement_max_age_seconds
-            ):
-                payload[key] = None
-                continue
-            payload[key] = value
-            if freshest_monotonic is None or seen_at > freshest_monotonic:
-                freshest_monotonic = seen_at
-                freshest_iso = seen_at_iso
-
-        payload["timestamp"] = freshest_iso
-        return payload
-
-    def _collector_status_payload(self) -> Dict[str, Any]:
-        runtime_seconds = int(max(0, time.monotonic() - self.started_monotonic))
-        scd41_runtime = None
-        if self.scd41_measurement_started_monotonic is not None:
-            scd41_runtime = int(max(0, time.monotonic() - self.scd41_measurement_started_monotonic))
-
-        return {
-            "running": self.running,
-            "started_at": self.started_at,
-            "uptime_seconds": runtime_seconds,
-            "database_path": self.config.database_path,
-            "log_file": self.config.log_file,
-            "sample_interval_seconds": self.config.sample_interval_seconds,
-            "partial_update_interval_seconds": self.config.partial_update_interval_seconds,
-            "full_update_interval_seconds": self.config.full_update_interval_seconds,
-            "weather_update_interval_seconds": self.config.weather_update_interval_seconds,
-            "command_poll_interval_seconds": self.config.command_poll_interval_seconds,
-            "connectivity_check_interval_seconds": self.config.connectivity_check_interval_seconds,
-            "measurement_max_age_seconds": self.config.measurement_max_age_seconds,
-            "scd41_asc_enabled": self.scd41_asc_enabled,
-            "scd41_min_valid_co2_ppm": self.config.minimum_valid_co2_ppm,
-            "scd41_calibration_min_runtime_seconds": self.config.scd41_calibration_min_runtime_seconds,
-            "scd41_calibration_window_seconds": self.config.scd41_calibration_window_seconds,
-            "scd41_calibration_min_samples": self.config.scd41_calibration_min_samples,
-            "scd41_calibration_max_drift_ppm": self.config.scd41_calibration_max_drift_ppm,
-            "scd41_measurement_runtime_seconds": scd41_runtime,
-            "scd41_recent_valid_samples": len(self.recent_valid_co2_samples),
-            "sps30_auto_cleaning_interval_seconds": self.sps30_auto_cleaning_interval_seconds,
-            "sensors": self.sensor_state,
-        }
-
-    def _publish_runtime_state(self) -> None:
-        self.database.set_state("collector_status", self._collector_status_payload())
-        self.database.set_state("latest_measurements", self._fresh_measurements_snapshot())
-        self.database.set_state("network_status", self.sensor_state["network"])
-
-    def _read_text_file(self, path: Path) -> Optional[str]:
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except FileNotFoundError:
-            return None
+            self.i2c = busio.I2C(board.SCL, board.SDA)
+            self.i2c_health.ok()
         except Exception as exc:
-            return f"error:{exc}"
+            LOGGER.exception("Failed to initialize I2C bus")
+            self.i2c_health.failed(str(exc), available=False)
 
-    def _read_wireless_signal_dbm(self, interface: str) -> Optional[float]:
+        if self.i2c is not None:
+            LOGGER.info("Initializing sensors")
+            self.scd41 = Scd41(self.i2c, self.config, self.events)
+            self.sht41 = Sht41(self.i2c, self.events)
+            self.sps30 = Sps30(self.i2c, self.config, self.events)
+
+        LOGGER.info("Initializing UC8253C display")
         try:
-            lines = Path("/proc/net/wireless").read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
-            return None
-        except Exception:
-            LOGGER.exception("Failed to read /proc/net/wireless")
-            return None
+            self.display = UC8253C_SPI(rotation=self.config.display_rotation)
+            self.display.clear()
+            self.display_health.ok()
+        except Exception as exc:
+            LOGGER.exception("Failed to initialize display")
+            self.display = None
+            self.display_health.failed(str(exc), available=False)
 
-        prefix = f"{interface}:"
-        for line in lines[2:]:
-            stripped = line.strip()
-            if not stripped.startswith(prefix):
-                continue
-            fields = stripped.split()
-            if len(fields) < 4:
-                return None
+        self.check_network()
+        self.publish_status()
+        time.sleep(5)  # let the sensors produce their first measurement
+
+    def install_signal_handlers(self) -> None:
+        def stop(signum, _frame):
+            LOGGER.info("Received signal %s, stopping", signum)
+            self.running = False
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+
+    def shutdown(self) -> None:
+        self.events.log(logging.INFO, "collector", "shutdown", "Shutting down hardware")
+        self.running = False
+        self.publish_status()
+        if self.scd41 is not None:
+            self.scd41.stop()
+        if self.sps30 is not None:
+            self.sps30.stop()
+        if self.display is not None:
             try:
-                return float(fields[3].rstrip("."))
-            except ValueError:
-                return None
-        return None
+                self.display.close()
+            except Exception:
+                LOGGER.exception("Failed to close display")
+        self.http.close()
+        self.publish_status()
+        self.database.close()
 
-    def _probe_network_status(self) -> Dict[str, Any]:
-        interface_dir = Path("/sys/class/net") / self.config.wifi_interface
-        interface_exists = interface_dir.exists()
-        operstate = self._read_text_file(interface_dir / "operstate") if interface_exists else None
-        carrier = self._read_text_file(interface_dir / "carrier") if interface_exists else None
-        signal_dbm = self._read_wireless_signal_dbm(self.config.wifi_interface)
-        network_ok = False
-        error_message = None
-        latency_ms = None
+    # --- Periodic tasks -----------------------------------------------------
 
-        try:
-            started = time.monotonic()
-            with socket.create_connection(
-                (self.config.connectivity_target_host, self.config.connectivity_target_port),
-                timeout=self.config.connectivity_timeout_seconds,
-            ):
-                latency_ms = round((time.monotonic() - started) * 1000, 1)
-            network_ok = True
-        except OSError as exc:
-            error_message = f"{exc.__class__.__name__}: {exc}"
+    def collect_sample(self) -> None:
+        """Read every sensor once; store whatever came back."""
+        sample: Dict[str, Optional[float]] = {}
 
-        return {
-            "checked_at": self._utc_now_iso(),
-            "interface": self.config.wifi_interface,
-            "interface_exists": interface_exists,
-            "operstate": operstate,
-            "carrier": carrier,
-            "signal_level_dbm": signal_dbm,
-            "target_host": self.config.connectivity_target_host,
-            "target_port": self.config.connectivity_target_port,
-            "healthy": network_ok,
-            "available": interface_exists,
-            "latency_ms": latency_ms,
-            "error": error_message,
-        }
+        if self.scd41 is not None:
+            co2 = self.scd41.read()
+            if co2 is not None:
+                sample["co2"] = co2
+            else:
+                self.readings.report_stale("co2", "scd41")
 
-    def _check_wifi_connectivity(self) -> None:
-        status = self._probe_network_status()
-        state = self.sensor_state["network"]
-        previous = dict(self.last_network_status or {})
-        state.update(
-            {
-                "available": status["available"],
-                "healthy": status["healthy"],
-                "last_error": status["error"],
-                "last_checked_at": status["checked_at"],
-                "interface": status["interface"],
-                "operstate": status["operstate"],
-                "carrier": status["carrier"],
-                "signal_level_dbm": status["signal_level_dbm"],
-                "target_host": status["target_host"],
-                "target_port": status["target_port"],
-                "latency_ms": status["latency_ms"],
-            }
+        if self.sht41 is not None:
+            ambient = self.sht41.read()
+            if ambient is not None:
+                sample["temp"], sample["humid"] = ambient
+
+        if self.sps30 is not None:
+            particles = self.sps30.read()
+            if particles is not None:
+                sample.update(particles)
+            else:
+                self.readings.report_stale("pm25", "sps30")
+
+        for metric, value in sample.items():
+            self.readings.record(metric, value)
+            self.buffer.add(metric, value)
+
+        if sample:
+            self.database.insert_measurement(sample)
+        self.publish_status()
+
+    def update_display(self, full_refresh: bool) -> None:
+        """Average the buffered samples and draw them on the e-paper."""
+        snapshot = self.buffer.take_averages()
+        snapshot["timestamp"] = utc_now_iso()
+        snapshot.update(self.weather)
+        self.last_display_snapshot = snapshot
+        self._render(snapshot, full_refresh)
+
+    def redraw_display(self, full_refresh: bool) -> None:
+        """Redraw the last snapshot (used by dashboard refresh commands)."""
+        if self.last_display_snapshot is None:
+            self.update_display(full_refresh)
+        else:
+            self._render(self.last_display_snapshot, full_refresh)
+
+    def _render(self, snapshot: Dict[str, Any], full_refresh: bool) -> None:
+        mode = "full" if full_refresh else "partial"
+        self.database.set_state(
+            "latest_display_snapshot", {"mode": mode, "snapshot": snapshot}
         )
-        if status["healthy"]:
-            state["last_success_at"] = status["checked_at"]
+        if self.display is None:
+            self.display_health.failed("Display unavailable; snapshot stored only", available=False)
+            self.publish_status()
+            return
+        try:
+            image = create_display_image(
+                self.display.width, self.display.height, snapshot, self.config.font_path
+            )
+            refresh = UC8253C_SPI.MODE_FULL if full_refresh else UC8253C_SPI.MODE_PARTIAL
+            self.display.display_image(image, mode=refresh)
+            LOGGER.info("Display updated with %s refresh", mode)
+            self.display_health.state["last_refresh_at"] = utc_now_iso()
+            self.display_health.ok()
+        except Exception as exc:
+            LOGGER.exception("Display update failed")
+            self.display_health.failed(str(exc))
+        self.publish_status()
 
-        if not previous or any(previous.get(key) != status.get(key) for key in ("available", "healthy", "operstate", "carrier", "error")):
+    def fetch_weather(self) -> None:
+        LOGGER.info("Fetching weather forecast")
+        forecast = get_weather_forecast(
+            self.config.weather_latitude, self.config.weather_longitude, self.http
+        )
+        if forecast:
+            self.weather = forecast
+            self.database.set_state("latest_weather", forecast)
+            self.weather_health.state["last_success_at"] = utc_now_iso()
+            self.weather_health.ok()
+        else:
+            self.weather_health.failed("Weather fetch failed; using previous forecast")
+        self.publish_status()
+
+    def check_network(self) -> None:
+        status = probe_network(self.config)
+        previous = self.network_state
+        self.network_state = {
+            **status,
+            "last_error": status["error"],
+            "last_checked_at": status["checked_at"],
+            "last_success_at": (
+                status["checked_at"] if status["healthy"] else previous.get("last_success_at")
+            ),
+        }
+        watched = ("available", "healthy", "operstate", "carrier", "error")
+        if any(previous.get(key) != status.get(key) for key in watched):
             level = logging.INFO if status["healthy"] else logging.WARNING
             message = (
                 f"Wi-Fi check: available={status['available']} healthy={status['healthy']} "
                 f"operstate={status['operstate']} carrier={status['carrier']}"
             )
             if status["error"]:
-                message = f"{message}; error={status['error']}"
-            self._log_event(level, "network", "connectivity_check", message, status)
+                message += f"; error={status['error']}"
+            self.events.log(level, "network", "connectivity_check", message, status)
+        self.publish_status()
 
-        self.last_network_status = status
-        self._publish_runtime_state()
+    def process_commands(self) -> None:
+        self.commands.process_pending()
 
-    def _mark_measurement_stale(self, key: str, source: str) -> None:
-        seen_at = self.latest_measurement_monotonic.get(key)
-        if seen_at is None or self.stale_measurement_flags.get(key):
-            return
-        age_seconds = time.monotonic() - seen_at
-        if age_seconds <= self.config.measurement_max_age_seconds:
-            return
-        self.stale_measurement_flags[key] = True
-        message = f"{key} measurement is stale after {int(age_seconds)}s"
-        self._log_event(
-            logging.WARNING,
-            source,
-            "measurement_stale",
-            message,
-            {
-                "metric": key,
-                "age_seconds": int(age_seconds),
-                "last_value": self.latest_measurements.get(key),
-                "last_seen_at": self.latest_measurement_iso.get(key),
-            },
+    def prune_database(self) -> None:
+        deleted = self.database.prune(
+            self.config.keep_measurements_days, self.config.keep_events_days
         )
-
-    def setup(self) -> None:
-        LOGGER.info("Initializing I2C bus")
-        try:
-            self.i2c = busio.I2C(board.SCL, board.SDA)
-            self._set_sensor_state("i2c", available=True, healthy=True, error=None)
-        except Exception as exc:
-            LOGGER.exception("Failed to initialize I2C bus")
-            self._set_sensor_state("i2c", available=False, healthy=False, error=str(exc))
-            self.i2c = None
-
-        if self.i2c is not None:
-            try:
-                LOGGER.info("Initializing SCD41")
-                self.scd4x = adafruit_scd4x.SCD4X(self.i2c)
-                self.scd4x.self_calibration_enabled = self.scd41_asc_enabled
-                self.scd41_asc_enabled = bool(self.scd4x.self_calibration_enabled)
-                self.scd4x.start_periodic_measurement()
-                self.scd41_measurement_started_monotonic = time.monotonic()
-                self._set_sensor_state("scd41", available=True, healthy=True, error=None)
-            except Exception as exc:
-                LOGGER.exception("Failed to initialize SCD41")
-                self.scd4x = None
-                self._set_sensor_state("scd41", available=False, healthy=False, error=str(exc))
-
-            try:
-                self.ambient_sensor = self._setup_ambient_sensor()
-                self._set_sensor_state("sht41", available=True, healthy=True, error=None)
-            except Exception as exc:
-                LOGGER.exception("Failed to initialize SHT41")
-                self.ambient_sensor = None
-                self._set_sensor_state("sht41", available=False, healthy=False, error=str(exc))
-
-            try:
-                LOGGER.info("Initializing SPS30")
-                self.sps30 = SPS30(self.i2c)
-                self.sps30.wakeup()
-                self.sps30.start_measurement()
-                self.sps30_auto_cleaning_interval_seconds = self.sps30.auto_cleaning_interval
-                self._set_sensor_state("sps30", available=True, healthy=True, error=None)
-            except Exception as exc:
-                LOGGER.exception("Failed to initialize SPS30")
-                self.sps30 = None
-                self._set_sensor_state("sps30", available=False, healthy=False, error=str(exc))
-
-        try:
-            LOGGER.info("Initializing UC8253C display")
-            self.display = UC8253C_SPI(rotation=self.config.display_rotation)
-            self.display.clear()
-            self._set_sensor_state("display", available=True, healthy=True, error=None)
-        except Exception as exc:
-            LOGGER.exception("Failed to initialize display")
-            self.display = None
-            self._set_sensor_state("display", available=False, healthy=False, error=str(exc))
-
-        self._check_wifi_connectivity()
-        self._publish_runtime_state()
-        time.sleep(5)
-
-    def _setup_ambient_sensor(self) -> AmbientSensor:
-        device = adafruit_sht4x.SHT4x(self.i2c)
-        LOGGER.info("Using SHT41 for ambient temperature and humidity")
-        return AmbientSensor(device, "SHT41")
-
-    def install_signal_handlers(self) -> None:
-        signal.signal(signal.SIGTERM, self._handle_stop_signal)
-        signal.signal(signal.SIGINT, self._handle_stop_signal)
-
-    def _handle_stop_signal(self, signum, _frame) -> None:
-        LOGGER.info("Received signal %s, stopping", signum)
-        self.running = False
-
-    def fetch_weather(self) -> None:
-        LOGGER.info("Fetching weather forecast")
-        weather = get_weather_forecast(
-            self.config.weather_latitude,
-            self.config.weather_longitude,
-            self.http,
-        )
-        if weather:
-            self.weather = weather
-            self.database.set_state("latest_weather", weather)
-            self._set_sensor_state("weather", available=True, healthy=True, error=None, stamp_key="last_success_at")
-        else:
-            LOGGER.warning("Keeping previous weather data because forecast fetch failed")
-            self._set_sensor_state(
-                "weather",
-                available=True,
-                healthy=False,
-                error="Weather fetch failed; using previous forecast",
-            )
-            self._log_event(
-                logging.WARNING,
-                "weather",
-                "forecast_fetch_failed",
-                "Weather fetch failed; keeping previous forecast",
-            )
-        self._publish_runtime_state()
-
-    def collect_sample(self) -> None:
-        sample: Dict[str, Optional[float]] = {key: None for key in self.latest_measurements}
-        now_iso = self._utc_now_iso()
-        now_monotonic = time.monotonic()
-
-        if self.scd4x is not None:
-            try:
-                if self.scd4x.data_ready:
-                    co2 = float(self.scd4x.CO2)
-                    if co2 < self.config.minimum_valid_co2_ppm:
-                        LOGGER.warning(
-                            "Ignoring invalid SCD41 CO2 reading: %.1f ppm (minimum valid: %d ppm)",
-                            co2,
-                            self.config.minimum_valid_co2_ppm,
-                        )
-                        self.sensor_state["scd41"]["consecutive_invalid_samples"] += 1
-                        self.sensor_state["scd41"]["last_invalid_sample_at"] = now_iso
-                        self._set_sensor_state(
-                            "scd41",
-                            available=True,
-                            healthy=False,
-                            error=f"Invalid CO2 reading: {co2:.1f} ppm",
-                        )
-                        self._log_event(
-                            logging.WARNING,
-                            "scd41",
-                            "invalid_measurement",
-                            f"Invalid CO2 reading ignored: {co2:.1f} ppm",
-                            {"co2": co2, "minimum_valid_co2_ppm": self.config.minimum_valid_co2_ppm},
-                        )
-                    else:
-                        self._record_measurement("co2", co2, sample, now_iso)
-                        self.recent_valid_co2_samples.append((now_monotonic, co2))
-                        self._trim_recent_co2_samples(now_monotonic)
-                        self.sensor_state["scd41"]["consecutive_invalid_samples"] = 0
-                        self.sensor_state["scd41"]["last_valid_sample_at"] = now_iso
-                        self._set_sensor_state("scd41", available=True, healthy=True, error=None)
-                else:
-                    self._mark_measurement_stale("co2", "scd41")
-            except Exception as exc:
-                LOGGER.exception("Failed to read SCD41")
-                self._set_sensor_state("scd41", available=True, healthy=False, error=str(exc))
-                self._log_event(
-                    logging.ERROR,
-                    "scd41",
-                    "read_failed",
-                    f"Failed to read SCD41: {exc}",
-                    {"traceback": traceback.format_exc()},
-                )
-
-        if self.ambient_sensor is not None:
-            try:
-                temp = float(self.ambient_sensor.temperature)
-                humid = float(self.ambient_sensor.relative_humidity)
-                if not (VALID_TEMPERATURE_RANGE[0] <= temp <= VALID_TEMPERATURE_RANGE[1]):
-                    raise ValueError(f"Temperature out of range: {temp:.2f} C")
-                if not (VALID_HUMIDITY_RANGE[0] <= humid <= VALID_HUMIDITY_RANGE[1]):
-                    raise ValueError(f"Humidity out of range: {humid:.2f} %")
-                self._record_measurement("temp", temp, sample, now_iso)
-                self._record_measurement("humid", humid, sample, now_iso)
-                self.sensor_state["sht41"]["last_valid_sample_at"] = now_iso
-                self._set_sensor_state("sht41", available=True, healthy=True, error=None)
-            except Exception as exc:
-                LOGGER.exception("Failed to read %s", self.ambient_sensor.name)
-                self._set_sensor_state("sht41", available=True, healthy=False, error=str(exc))
-                self._log_event(
-                    logging.ERROR,
-                    "sht41",
-                    "read_failed",
-                    f"Failed to read {self.ambient_sensor.name}: {exc}",
-                    {"traceback": traceback.format_exc()},
-                )
-
-        if self.sps30 is not None:
-            try:
-                if self.sps30.data_ready:
-                    data = self.sps30.read()
-                    for field in ("pm1", "pm25", "pm4", "pm10", "tps"):
-                        value = float(data[field])
-                        if value < 0:
-                            raise ValueError(f"{field} must not be negative")
-                        self._record_measurement(field, value, sample, now_iso)
-                    self.sensor_state["sps30"]["last_valid_sample_at"] = now_iso
-                    self._set_sensor_state("sps30", available=True, healthy=True, error=None)
-                else:
-                    self._mark_measurement_stale("pm25", "sps30")
-            except Exception as exc:
-                LOGGER.exception("Failed to read SPS30")
-                self._set_sensor_state("sps30", available=True, healthy=False, error=str(exc))
-                self._log_event(
-                    logging.ERROR,
-                    "sps30",
-                    "read_failed",
-                    f"Failed to read SPS30: {exc}",
-                    {"traceback": traceback.format_exc()},
-                )
-
-        if any(value is not None for value in sample.values()):
-            self.database.insert_measurement(sample)
-        self._publish_runtime_state()
-
-    def update_display(self, full_refresh: bool) -> None:
-        snapshot = self.sample_buffer.averaged_snapshot()
-        snapshot.update(self.weather)
-        self.last_display_snapshot = dict(snapshot)
-        self.database.set_state(
-            "latest_display_snapshot",
-            {
-                "mode": "full" if full_refresh else "partial",
-                "snapshot": self.last_display_snapshot,
-            },
-        )
-
-        if self.display is None:
-            LOGGER.warning("Skipping display update because display is unavailable")
-            self._set_sensor_state(
-                "display",
-                available=False,
-                healthy=False,
-                error="Display unavailable; snapshot stored only",
-            )
-            self._log_event(
-                logging.WARNING,
-                "display",
-                "update_skipped",
-                "Display unavailable; snapshot stored only",
-                {"refresh": "full" if full_refresh else "partial"},
-            )
-            self._publish_runtime_state()
-            return
-
-        image = create_display_image(
-            self.display.width,
-            self.display.height,
-            snapshot,
-            self.config.font_path,
-        )
-        refresh_mode = (
-            UC8253C_SPI.MODE_FULL if full_refresh else UC8253C_SPI.MODE_PARTIAL
-        )
-        self.display.display_image(image, mode=refresh_mode)
-        LOGGER.info("Display updated with %s refresh", refresh_mode.lower())
-        self.sensor_state["display"]["last_refresh_at"] = self._utc_now_iso()
-        self._set_sensor_state("display", available=True, healthy=True, error=None)
-        self._publish_runtime_state()
-
-    def _render_existing_snapshot(self, full_refresh: bool) -> None:
-        if self.last_display_snapshot is None:
-            self.update_display(full_refresh=full_refresh)
-            return
-        if self.display is None:
-            LOGGER.warning("Skipping display refresh command because display is unavailable")
-            self._set_sensor_state(
-                "display",
-                available=False,
-                healthy=False,
-                error="Display unavailable; cannot execute refresh command",
-            )
-            self._publish_runtime_state()
-            return
-
-        image = create_display_image(
-            self.display.width,
-            self.display.height,
-            self.last_display_snapshot,
-            self.config.font_path,
-        )
-        refresh_mode = (
-            UC8253C_SPI.MODE_FULL if full_refresh else UC8253C_SPI.MODE_PARTIAL
-        )
-        self.display.display_image(image, mode=refresh_mode)
-        self.database.set_state(
-            "latest_display_snapshot",
-            {
-                "mode": "full" if full_refresh else "partial",
-                "snapshot": self.last_display_snapshot,
-            },
-        )
-        self.sensor_state["display"]["last_refresh_at"] = self._utc_now_iso()
-        self._set_sensor_state("display", available=True, healthy=True, error=None)
-        self._publish_runtime_state()
-
-    def _process_pending_commands(self) -> None:
-        for command in self.database.claim_pending_commands():
-            LOGGER.info("Processing command %s", command["command"])
-            self._log_event(
-                logging.INFO,
-                "command",
-                "started",
-                f"Processing command {command['command']}",
-                {"id": command["id"], "payload": command["payload"]},
-            )
-            try:
-                result = self._execute_command(command["command"], command["payload"])
-                self.database.complete_command(command["id"], True, result)
-                self._log_event(
-                    logging.INFO,
-                    "command",
-                    "succeeded",
-                    f"Command {command['command']} succeeded",
-                    {"id": command["id"], "result": result},
-                )
-            except Exception as exc:
-                LOGGER.exception("Command %s failed", command["command"])
-                failure = {
-                    "error": str(exc),
-                    "type": exc.__class__.__name__,
-                    "traceback": traceback.format_exc(),
-                }
-                self.database.complete_command(command["id"], False, failure)
-                self._log_event(
-                    logging.ERROR,
-                    "command",
-                    "failed",
-                    f"Command {command['command']} failed: {exc}",
-                    {"id": command["id"], "payload": command["payload"], **failure},
-                )
-            finally:
-                self._publish_runtime_state()
-
-    def _validate_scd41_calibration(self, target_co2: int, confirmed: bool) -> Dict[str, Any]:
-        if not confirmed:
-            raise ValueError(
-                "Forced calibration requires explicit confirmation that the sensor is in known stable air"
-            )
-        if target_co2 < 350 or target_co2 > 2000:
-            raise ValueError("target_co2 must be between 350 and 2000 ppm")
-        if self.scd41_measurement_started_monotonic is None:
-            raise RuntimeError("SCD41 periodic measurement has not started")
-
-        runtime_seconds = time.monotonic() - self.scd41_measurement_started_monotonic
-        if runtime_seconds < self.config.scd41_calibration_min_runtime_seconds:
-            raise RuntimeError(
-                "SCD41 must run continuously before forced calibration; "
-                f"current runtime is {int(runtime_seconds)}s, required is {self.config.scd41_calibration_min_runtime_seconds}s"
+        if deleted["measurements"] or deleted["events"]:
+            self.events.log(
+                logging.INFO, "storage", "pruned",
+                f"Pruned {deleted['measurements']} measurements and {deleted['events']} events",
+                deleted,
             )
 
-        self._trim_recent_co2_samples()
-        samples = [value for _ts, value in self.recent_valid_co2_samples]
-        if len(samples) < self.config.scd41_calibration_min_samples:
-            raise RuntimeError(
-                "Not enough recent valid SCD41 samples for safe calibration; "
-                f"need {self.config.scd41_calibration_min_samples}, have {len(samples)}"
-            )
+    # --- Status shared with the dashboard ------------------------------------
 
-        spread = max(samples) - min(samples)
-        if spread > self.config.scd41_calibration_max_drift_ppm:
-            raise RuntimeError(
-                "Recent SCD41 readings are not stable enough for forced calibration; "
-                f"spread is {spread:.1f} ppm, limit is {self.config.scd41_calibration_max_drift_ppm} ppm"
-            )
+    def publish_status(self) -> None:
+        self.database.set_state("collector_status", self._status_payload())
+        self.database.set_state("latest_measurements", self.readings.fresh_snapshot())
+        self.database.set_state("network_status", self.network_state)
 
-        average = sum(samples) / len(samples)
-        if abs(average - target_co2) > self.config.scd41_calibration_max_reference_delta_ppm:
-            raise RuntimeError(
-                "Recent SCD41 readings do not match the requested calibration target closely enough; "
-                f"average is {average:.1f} ppm and target is {target_co2} ppm"
-            )
+    def _status_payload(self) -> Dict[str, Any]:
         return {
-            "runtime_seconds": int(runtime_seconds),
-            "sample_count": len(samples),
-            "average_co2": round(average, 1),
-            "spread_co2": round(spread, 1),
+            "running": self.running,
+            "started_at": self.started_at,
+            "uptime_seconds": int(time.monotonic() - self.started_monotonic),
+            "database_path": self.config.database_path,
+            "log_file": self.config.log_file,
+            "sample_interval_seconds": self.config.sample_interval,
+            "partial_update_interval_seconds": self.config.partial_update_interval,
+            "full_update_interval_seconds": self.config.full_update_interval,
+            "weather_update_interval_seconds": self.config.weather_update_interval,
+            "measurement_max_age_seconds": self.config.measurement_max_age,
+            "scd41_asc_enabled": self.scd41.asc_enabled if self.scd41 else None,
+            "scd41_min_valid_co2_ppm": self.config.min_valid_co2_ppm,
+            "scd41_measurement_runtime_seconds": (
+                self.scd41.runtime_seconds() if self.scd41 else None
+            ),
+            "scd41_recent_valid_samples": (
+                len(self.scd41.recent_valid_samples) if self.scd41 else 0
+            ),
+            "sps30_auto_cleaning_interval_seconds": (
+                self.sps30.auto_cleaning_interval if self.sps30 else None
+            ),
+            "sensors": {
+                "i2c": self.i2c_health.state,
+                "scd41": self.scd41.health.state if self.scd41 else self._missing("SCD41"),
+                "sht41": self.sht41.health.state if self.sht41 else self._missing("SHT41"),
+                "sps30": self.sps30.health.state if self.sps30 else self._missing("SPS30"),
+                "display": self.display_health.state,
+                "weather": self.weather_health.state,
+                "network": self.network_state,
+            },
         }
 
-    def _execute_command(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise ValueError("command payload must be a JSON object")
+    @staticmethod
+    def _missing(name: str) -> Dict[str, Any]:
+        return {"available": False, "healthy": False, "last_error": f"{name} not initialized"}
 
-        if command == "display_full_refresh":
-            self._render_existing_snapshot(full_refresh=True)
-            return {"message": "Triggered full display refresh"}
-
-        if command == "display_partial_refresh":
-            self._render_existing_snapshot(full_refresh=False)
-            return {"message": "Triggered partial display refresh"}
-
-        if command == "sps30_force_clean":
-            if self.sps30 is None:
-                raise RuntimeError("SPS30 is not initialized")
-            now = time.monotonic()
-            if (
-                self.last_sps30_manual_clean_monotonic is not None
-                and now - self.last_sps30_manual_clean_monotonic < self.config.sps30_min_seconds_between_manual_cleans
-            ):
-                remaining = int(
-                    self.config.sps30_min_seconds_between_manual_cleans
-                    - (now - self.last_sps30_manual_clean_monotonic)
-                )
-                raise RuntimeError(
-                    "SPS30 fan cleaning is rate-limited; "
-                    f"wait another {remaining}s before running it again"
-                )
-            self.sps30.force_clean()
-            self.last_sps30_manual_clean_monotonic = now
-            self.sensor_state["sps30"]["last_manual_clean_at"] = self._utc_now_iso()
-            self._set_sensor_state("sps30", available=True, healthy=True, error=None)
-            return {"message": "Triggered SPS30 fan cleaning"}
-
-        if command == "sps30_set_auto_cleaning_interval":
-            if self.sps30 is None:
-                raise RuntimeError("SPS30 is not initialized")
-            seconds = self._coerce_int(payload.get("seconds", 604800), "seconds")
-            if seconds < 0 or seconds > 31536000:
-                raise ValueError("seconds must be between 0 and 31536000")
-            self.sps30.auto_cleaning_interval = seconds
-            self.sps30_auto_cleaning_interval_seconds = seconds
-            self._set_sensor_state("sps30", available=True, healthy=True, error=None)
-            return {"message": "Updated SPS30 auto cleaning interval", "seconds": seconds}
-
-        if command == "scd41_force_calibration":
-            if self.scd4x is None:
-                raise RuntimeError("SCD41 is not initialized")
-            target_co2 = self._coerce_int(payload.get("target_co2", 420), "target_co2")
-            confirmed = self._coerce_bool(payload.get("confirmed"), False)
-            persist = self._coerce_bool(payload.get("persist"), True)
-            validation = self._validate_scd41_calibration(target_co2, confirmed)
-
-            self.scd4x.stop_periodic_measurement()
-            time.sleep(1.0)
-            try:
-                correction = self.scd4x.force_calibration(target_co2)
-                if correction == 0xFFFF:
-                    raise RuntimeError(
-                        "SCD41 forced calibration returned 0xFFFF; sensor rejected the command after stopping periodic measurement"
-                    )
-                if persist:
-                    self.scd4x.persist_settings()
-            finally:
-                self.scd4x.start_periodic_measurement()
-                self.scd41_measurement_started_monotonic = time.monotonic()
-                self.recent_valid_co2_samples.clear()
-
-            result = {
-                "message": "Triggered SCD41 forced calibration",
-                "target_co2": target_co2,
-                "persisted": persist,
-                "correction": correction,
-                "validation": validation,
-                "calibrated_at": self._utc_now_iso(),
-            }
-            self.sensor_state["scd41"]["last_calibration_at"] = result["calibrated_at"]
-            self._set_sensor_state("scd41", available=True, healthy=True, error=None)
-            self.database.set_state("scd41_last_calibration", result)
-            return result
-
-        if command == "scd41_set_asc":
-            if self.scd4x is None:
-                raise RuntimeError("SCD41 is not initialized")
-            enabled = self._coerce_bool(payload.get("enabled"), False)
-            persist = self._coerce_bool(payload.get("persist"), False)
-            self.scd4x.stop_periodic_measurement()
-            time.sleep(1.0)
-            try:
-                self.scd4x.self_calibration_enabled = enabled
-                self.scd41_asc_enabled = bool(self.scd4x.self_calibration_enabled)
-                if persist:
-                    self.scd4x.persist_settings()
-            finally:
-                self.scd4x.start_periodic_measurement()
-                self.scd41_measurement_started_monotonic = time.monotonic()
-                self.recent_valid_co2_samples.clear()
-            self._set_sensor_state("scd41", available=True, healthy=True, error=None)
-            return {
-                "message": "Updated SCD41 ASC setting",
-                "enabled": self.scd41_asc_enabled,
-                "persisted": persist,
-            }
-
-        raise ValueError(f"Unsupported command: {command}")
-
-    def _run_periodic_task(self, label: str, func) -> None:
-        try:
-            func()
-        except Exception as exc:
-            self._log_event(
-                logging.ERROR,
-                label,
-                "task_failed",
-                f"{label} task failed: {exc}",
-                {"traceback": traceback.format_exc()},
-            )
+    # --- Main loop ------------------------------------------------------------
 
     def run(self) -> None:
         self.config.validate()
         self.install_signal_handlers()
         self.setup()
 
-        next_sample = time.monotonic()
-        next_partial = next_sample
-        next_full = next_sample
-        next_weather = next_sample
-        next_command_poll = next_sample
-        next_connectivity_check = next_sample
+        tasks = [
+            PeriodicTask("collect_sample", self.config.sample_interval, self.collect_sample),
+            PeriodicTask("weather", self.config.weather_update_interval, self.fetch_weather),
+            PeriodicTask("commands", self.config.command_poll_interval, self.process_commands),
+            PeriodicTask("network", self.config.network_check_interval, self.check_network),
+            PeriodicTask("storage_prune", 24 * 3600, self.prune_database),
+            PeriodicTask("display", self.config.partial_update_interval, self._display_tick),
+        ]
+        self._next_full_refresh = time.monotonic()
 
-        LOGGER.info("Air monitor started")
-        self._log_event(logging.INFO, "collector", "started", "Air monitor started")
-
+        self.events.log(logging.INFO, "collector", "started", "Air monitor started")
         try:
             while self.running:
                 now = time.monotonic()
-
-                if now >= next_sample:
-                    self._run_periodic_task("collect_sample", self.collect_sample)
-                    while next_sample <= now:
-                        next_sample += self.config.sample_interval_seconds
-
-                if now >= next_weather:
-                    self._run_periodic_task("weather", self.fetch_weather)
-                    while next_weather <= now:
-                        next_weather += self.config.weather_update_interval_seconds
-
-                if now >= next_command_poll:
-                    self._run_periodic_task("command_poll", self._process_pending_commands)
-                    while next_command_poll <= now:
-                        next_command_poll += self.config.command_poll_interval_seconds
-
-                if now >= next_connectivity_check:
-                    self._run_periodic_task("network", self._check_wifi_connectivity)
-                    while next_connectivity_check <= now:
-                        next_connectivity_check += self.config.connectivity_check_interval_seconds
-
-                if now >= next_full:
-                    self._run_periodic_task("display_full", lambda: self.update_display(full_refresh=True))
-                    while next_full <= now:
-                        next_full += self.config.full_update_interval_seconds
-                    while next_partial <= now:
-                        next_partial += self.config.partial_update_interval_seconds
-                elif now >= next_partial:
-                    self._run_periodic_task("display_partial", lambda: self.update_display(full_refresh=False))
-                    while next_partial <= now:
-                        next_partial += self.config.partial_update_interval_seconds
-
+                for task in tasks:
+                    task.run_if_due(now, self.events)
                 time.sleep(0.2)
         finally:
             self.shutdown()
 
-    def shutdown(self) -> None:
-        LOGGER.info("Shutting down hardware")
-        self.running = False
-        self._log_event(logging.INFO, "collector", "shutdown", "Shutting down hardware")
-        self._publish_runtime_state()
-
-        if self.scd4x is not None:
-            try:
-                self.scd4x.stop_periodic_measurement()
-            except Exception:
-                LOGGER.exception("Failed to stop SCD41 periodic measurement")
-
-        if self.sps30 is not None:
-            try:
-                self.sps30.stop_measurement()
-            except Exception:
-                LOGGER.exception("Failed to stop SPS30 measurement")
-            try:
-                self.sps30.sleep()
-            except Exception:
-                LOGGER.exception("Failed to put SPS30 to sleep")
-
-        if self.display is not None:
-            try:
-                self.display.close()
-            except Exception:
-                LOGGER.exception("Failed to close display")
-
-        self.http.close()
-        self._publish_runtime_state()
+    def _display_tick(self) -> None:
+        """Partial refresh normally; a full refresh every full_update_interval."""
+        now = time.monotonic()
+        full = now >= self._next_full_refresh
+        if full:
+            while self._next_full_refresh <= now:
+                self._next_full_refresh += self.config.full_update_interval
+        self.update_display(full_refresh=full)
 
 
 def main() -> int:
-    config = AppConfig()
-    global LOGGER
-    LOGGER = configure_logging(
-        "airmonitor",
-        level=logging.INFO,
-        log_file=config.log_file,
-        fmt=LOG_FORMAT,
-    )
-
+    config = Config.from_env()
+    configure_logging("airmonitor", level=logging.INFO, log_file=config.log_file)
     try:
-        app = AirMonitorApp(config)
-        app.run()
+        AirMonitor(config).run()
         return 0
     except Exception:
         LOGGER.exception("Air monitor terminated with a fatal error")

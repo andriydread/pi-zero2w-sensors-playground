@@ -1,38 +1,16 @@
-# Protect the virtual environment, logs, and database on the Pi from being deleted
-
+# Protect files on the Pi from being deleted by --delete
 P .venv/
-P air_quality_log.csv
-P air_monitor.log
 P data/
 P data/***
 
-# Virtual environment
-
+# Never upload these
 - .venv/
 - venv/
-
-# git metadata
-
 - .git/
 - .gitignore
-
-# Python cache files
-
-- **pycache**/
-- \*.pyc
-
-# Filter file and local-only files
-
+- __pycache__/
+- *.pyc
 - .rsync-filter
 - .DS_Store
-
-# Log files and state (Do not upload local versions)
-
-- air_quality_log.csv
-- air_monitor.log
-- air_quality_log_copy.csv
-- GEMINI.md
-
-# Database files stay on the Pi
-
+- from_pi/
 - data/

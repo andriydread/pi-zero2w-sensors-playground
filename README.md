@@ -1,209 +1,81 @@
 # Air Monitor
 
-Python application for a Raspberry Pi Zero 2 W air station with:
+Air quality station on a Raspberry Pi Zero 2 W.
 
-- `SHT41` for ambient temperature and humidity
-- `SCD41` for CO2
-- `SPS30` over I2C for particulate matter
-- `UC8253C` 3.7" e-paper display for local output
-- `Flask` dashboard for local-network monitoring and commands
+| Hardware | Purpose |
+|---|---|
+| SCD41 (I2C) | CO2 |
+| SHT41 (I2C) | Temperature, humidity |
+| SPS30 (I2C) | Particulate matter (PM1/PM2.5/PM4/PM10) |
+| UC8253C 3.7" e-paper (SPI) | Local display (416x240) |
 
-The collector samples sensors continuously, averages readings between screen refreshes, fetches forecast data from Open-Meteo, stores history in SQLite, and renders a 1-bit dashboard image for the display.
+Two systemd services run on the Pi:
 
-## Setup
+- **airmonitor** (`main.py`) — reads sensors every 10s, stores history in SQLite, refreshes the e-paper every 60s (full refresh every 5 min), fetches an Open-Meteo forecast, and auto-recovers a stuck SCD41.
+- **airmonitor-web** (`dashboard/`) — Flask dashboard at `http://<pi>:8080` with live values, charts, event log, and sensor commands (SPS30 fan clean, SCD41 calibration).
+
+Both share one SQLite database (`data/airmonitor.db`); the dashboard queues commands there and the collector executes them.
+
+## Project layout
+
+```
+main.py            entry point: builds the app and runs the collector loop
+airmonitor/        core collector package
+  config.py          all settings (env-overridable, sensible defaults)
+  sensors.py         SCD41 / SHT41 / SPS30 wrappers + health tracking
+  commands.py        executes dashboard commands
+  network.py         Wi-Fi / internet probe
+  storage.py         SQLite: measurements, state, commands, events
+  logging_utils.py   logging + event-log helpers
+lib/               low-level drivers (SPS30 I2C, UC8253C e-paper)
+utils/             display rendering, weather fetch, AQI math
+assets/            icons and fonts for the e-paper UI
+dashboard/         Flask app + frontend
+systemd/           service unit files (airmonitor, airmonitor-web)
+```
+
+## Common tasks (Makefile)
+
+The Pi is reachable as `pi@pizero.local` by default (`make deploy PI=pi@<addr>` to override).
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+make install     # first-time setup on the Pi (venv, deps, systemd units)
+make deploy      # sync code, install deps, restart services
+make deploy-full # deploy + update systemd unit files
+make restart / stop / start / status
+make logs        # tail collector log on the Pi
+make logs-web    # tail dashboard log on the Pi
+make pull-data   # copy database + logs from the Pi to ./from_pi/data
 ```
 
-Enable `I2C` and `SPI` on the Pi before running the app.
+`data/` (database, logs) is protected by `.rsync-filter` and survives deploys.
 
-## Run Collector
+## Local development
 
 ```bash
-python main.py
+make venv                     # or: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python main.py                # needs Pi hardware (I2C + SPI enabled)
+python -m dashboard.app       # works anywhere; reads data/airmonitor.db
 ```
-
-## Run Dashboard
-
-```bash
-python -m dashboard.app
-```
-
-Default dashboard URL:
-
-```text
-http://<pi-address>:8080
-```
-
-## Deploy to Pi
-
-Mirror the workspace. The default `data/` directory is excluded locally and protected remotely, so the Pi keeps its history database across deploys:
-
-```bash
-rsync -avz --delete --filter="merge .rsync-filter" ./ pi@pizero.local:~/air_station
-```
-
-Install Python dependencies on the Pi:
-
-```bash
-cd ~/air_station
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### First Install
-
-Install both systemd units for the first time:
-
-```bash
-sudo cp airmonitor.service /etc/systemd/system/
-sudo cp airmonitor-web.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable airmonitor.service
-sudo systemctl enable airmonitor-web.service
-sudo systemctl start airmonitor.service
-sudo systemctl start airmonitor-web.service
-```
-
-### Update Code Only
-
-If only Python/code/assets changed and the service files did not change:
-
-```bash
-cd ~/air_station
-source .venv/bin/activate
-pip install -r requirements.txt
-sudo systemctl restart airmonitor.service
-sudo systemctl restart airmonitor-web.service
-```
-
-### Update Existing Service Files
-
-If `airmonitor.service` or `airmonitor-web.service` changed, copy the new versions and reload systemd:
-
-```bash
-sudo cp airmonitor.service /etc/systemd/system/
-sudo cp airmonitor-web.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl restart airmonitor.service
-sudo systemctl restart airmonitor-web.service
-```
-
-### Remove Old Services Cleanly
-
-Stop, disable, and delete the installed units:
-
-```bash
-sudo systemctl stop airmonitor.service
-sudo systemctl stop airmonitor-web.service
-sudo systemctl disable airmonitor.service
-sudo systemctl disable airmonitor-web.service
-sudo rm -f /etc/systemd/system/airmonitor.service
-sudo rm -f /etc/systemd/system/airmonitor-web.service
-sudo systemctl daemon-reload
-```
-
-### Replace One Old Service Only
-
-If you want to replace just one installed service file:
-
-Collector:
-
-```bash
-sudo systemctl stop airmonitor.service
-sudo systemctl disable airmonitor.service
-sudo rm -f /etc/systemd/system/airmonitor.service
-sudo cp airmonitor.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable airmonitor.service
-sudo systemctl start airmonitor.service
-```
-
-Dashboard:
-
-```bash
-sudo systemctl stop airmonitor-web.service
-sudo systemctl disable airmonitor-web.service
-sudo rm -f /etc/systemd/system/airmonitor-web.service
-sudo cp airmonitor-web.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable airmonitor-web.service
-sudo systemctl start airmonitor-web.service
-```
-
-### Check Status And Logs
-
-Check whether the services are running:
-
-```bash
-sudo systemctl status airmonitor.service
-sudo systemctl status airmonitor-web.service
-```
-
-Read recent logs:
-
-```bash
-journalctl -u airmonitor.service -n 100 --no-pager
-journalctl -u airmonitor-web.service -n 100 --no-pager
-tail -n 100 ~/air_station/data/logs/collector.log
-tail -n 100 ~/air_station/data/logs/dashboard.log
-```
-
-## Project Layout
-
-- `main.py` initializes hardware and drives the collector loop.
-- `storage.py` owns the SQLite schema for measurements, state, and queued commands.
-- `dashboard/` contains the Flask app, HTML template, and static assets.
-- `lib/sps30_i2c.py` contains the SPS30 I2C driver.
-- `lib/uc8253c.py` contains the e-paper driver.
-- `utils/display.py` renders the dashboard image.
-- `utils/weather.py` fetches forecast blocks used by the display.
-- `utils/aqi.py` computes AQI and air-quality labels.
-
-## Runtime Behavior
-
-- `SCD41` periodic measurement starts during setup.
-- `SHT41` is the only supported temperature/humidity sensor.
-- `SPS30` is started in I2C floating-point measurement mode.
-- The collector stores sensor history in `data/airmonitor.db`.
-- The dashboard reads the same SQLite database and queues commands back to the collector.
-- The collector persists diagnostic events in SQLite (`events` table) and rotating log files under `data/logs/`.
-- The collector performs periodic Wi-Fi/connectivity probes and stores the latest network status in shared state.
-- Weather data is refreshed on its own interval and merged into the same display snapshot.
 
 ## Configuration
 
-You do not need a `.env` file to run the app. All configuration values have defaults defined directly in code.
+Everything has a default in `config.py` and can be overridden with `AIRMONITOR_*` environment variables (set them in the systemd unit files). The important ones:
 
-Collector environment variables:
+| Variable | Default | Meaning |
+|---|---|---|
+| `AIRMONITOR_SAMPLE_INTERVAL` | 10 | seconds between sensor reads |
+| `AIRMONITOR_PARTIAL_UPDATE_INTERVAL` | 60 | e-paper partial refresh |
+| `AIRMONITOR_FULL_UPDATE_INTERVAL` | 300 | e-paper full refresh |
+| `AIRMONITOR_WEATHER_LAT` / `_LON` | Lviv | forecast location |
+| `AIRMONITOR_SCD41_ASC_ENABLED` | false | SCD41 automatic self-calibration |
+| `AIRMONITOR_SCD41_REINIT_AFTER_INVALID` | 30 | bad readings in a row before sensor auto-restart |
+| `AIRMONITOR_KEEP_MEASUREMENTS_DAYS` | 90 | history retention (0 = keep forever) |
+| `AIRMONITOR_KEEP_EVENTS_DAYS` | 14 | event-log retention |
+| `AIRMONITOR_DATABASE_PATH` | `data/airmonitor.db` | SQLite location |
 
-- `AIRMONITOR_SAMPLE_INTERVAL`
-- `AIRMONITOR_PARTIAL_UPDATE_INTERVAL`
-- `AIRMONITOR_FULL_UPDATE_INTERVAL`
-- `AIRMONITOR_WEATHER_UPDATE_INTERVAL`
-- `AIRMONITOR_COMMAND_POLL_INTERVAL`
-- `AIRMONITOR_CONNECTIVITY_CHECK_INTERVAL`
-- `AIRMONITOR_CONNECTIVITY_TARGET_HOST`
-- `AIRMONITOR_CONNECTIVITY_TARGET_PORT`
-- `AIRMONITOR_CONNECTIVITY_TIMEOUT`
-- `AIRMONITOR_WIFI_INTERFACE`
-- `AIRMONITOR_FONT_PATH`
-- `AIRMONITOR_WEATHER_LAT`
-- `AIRMONITOR_WEATHER_LON`
-- `AIRMONITOR_DISPLAY_ROTATION`
-- `AIRMONITOR_DATABASE_PATH`
-- `AIRMONITOR_LOG_FILE`
-- `AIRMONITOR_SCD41_ASC_ENABLED`
+## Maintenance notes
 
-Dashboard environment variables:
-
-- `AIRMONITOR_DATABASE_PATH`
-- `AIRMONITOR_WEB_HOST`
-- `AIRMONITOR_WEB_PORT`
-- `AIRMONITOR_DASHBOARD_LOG_FILE`
-
-If you want to override them for a service, add `Environment=` lines or an `EnvironmentFile=` entry in the relevant systemd service.
+- **SCD41 stuck at 0 ppm**: the sensor can silently start returning 0 ppm until restarted (happened 2026-07-14..18). The collector now re-initializes it automatically after 30 consecutive invalid readings (~5 min).
+- **SCD41 recalibration**: use the dashboard command with the sensor in fresh outdoor air, or run `python utils/recalibrate_SCD41.py` on the Pi.
+- **SPS30 fan cleaning**: automatic weekly; can be forced from the dashboard (rate-limited to once per 30 min).

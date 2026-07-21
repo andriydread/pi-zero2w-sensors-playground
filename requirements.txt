@@ -1,17 +1,13 @@
-# Modules for EPaper (UC8253C) display
-pyserial
+# E-paper display (UC8253C over SPI)
 RPi.GPIO
 spidev
 Pillow
 
-# Modules for I2C sensors
-# Adafruit helper
+# I2C sensors (Adafruit CircuitPython)
 adafruit-blinka
-# SHT41 Temp/Humid sensor
-adafruit-circuitpython-sht4x
-# SCD41 CO2 sensor
-adafruit-circuitpython-scd4x
+adafruit-circuitpython-sht4x    # SHT41 temperature/humidity
+adafruit-circuitpython-scd4x    # SCD41 CO2
 
-# Dashboard and misc
+# Dashboard and weather
 Flask
 requests

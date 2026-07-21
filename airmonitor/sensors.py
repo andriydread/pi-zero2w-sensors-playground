@@ -1,0 +1,349 @@
+"""Sensor wrappers.
+
+Each class hides one piece of hardware behind two simple ideas:
+
+- ``read()`` returns fresh values, or ``None`` when nothing valid is available.
+  It never raises: failures are logged and reflected in ``health``.
+- ``health`` is a small status dict (available / healthy / last_error / ...)
+  that the dashboard displays.
+
+The SCD41 wrapper also re-initializes the sensor automatically after a long
+streak of invalid readings — the sensor can get stuck returning 0 ppm until
+it is restarted (this happened in production in July 2026).
+"""
+
+import logging
+import time
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
+
+import adafruit_scd4x
+import adafruit_sht4x
+
+from lib.sps30_i2c import SPS30
+
+LOGGER = logging.getLogger("airmonitor")
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class SensorHealth:
+    """Tracks availability/health of one sensor and logs state changes."""
+
+    def __init__(self, name: str, events):
+        self.name = name
+        self.events = events
+        self.state: Dict[str, Any] = {
+            "available": False,
+            "healthy": False,
+            "last_error": None,
+        }
+
+    def update(self, *, available: bool, healthy: bool, error: Optional[str] = None) -> None:
+        changed = (
+            self.state["available"] != available
+            or self.state["healthy"] != healthy
+            or self.state["last_error"] != error
+        )
+        self.state.update(available=available, healthy=healthy, last_error=error)
+        self.state["last_event_at"] = utc_now_iso()
+        if changed:
+            level = logging.INFO if healthy else logging.WARNING
+            message = f"{self.name} state changed: available={available} healthy={healthy}"
+            if error:
+                message += f"; error={error}"
+            self.events.log(level, self.name, "state_change", message, dict(self.state))
+
+    def ok(self) -> None:
+        self.update(available=True, healthy=True)
+
+    def failed(self, error: str, *, available: bool = True) -> None:
+        self.update(available=available, healthy=False, error=error)
+
+
+class Scd41:
+    """SCD41 CO2 sensor (I2C)."""
+
+    def __init__(self, i2c, config, events):
+        self.config = config
+        self.events = events
+        self.health = SensorHealth("scd41", events)
+        self.device = None
+        self.asc_enabled = config.scd41_asc_enabled
+        self.invalid_streak = 0
+        self.measurement_started_at: Optional[float] = None
+        # (monotonic time, ppm) pairs used by the calibration safety checks
+        self.recent_valid_samples: deque = deque()
+        try:
+            self.device = adafruit_scd4x.SCD4X(i2c)
+            self._start_measurement()
+            self.health.ok()
+        except Exception as exc:
+            LOGGER.exception("Failed to initialize SCD41")
+            self.device = None
+            self.health.failed(str(exc), available=False)
+
+    def _start_measurement(self) -> None:
+        self.device.self_calibration_enabled = self.asc_enabled
+        self.asc_enabled = bool(self.device.self_calibration_enabled)
+        self.device.start_periodic_measurement()
+        self.measurement_started_at = time.monotonic()
+        self.recent_valid_samples.clear()
+        self.invalid_streak = 0
+
+    def read(self) -> Optional[float]:
+        """Return a valid CO2 reading in ppm, or None."""
+        if self.device is None:
+            return None
+        try:
+            if not self.device.data_ready:
+                return None
+            co2 = float(self.device.CO2)
+            if co2 < self.config.min_valid_co2_ppm:
+                self._handle_invalid_reading(co2)
+                return None
+            self.invalid_streak = 0
+            now = time.monotonic()
+            self.recent_valid_samples.append((now, co2))
+            self._trim_recent_samples(now)
+            self.health.ok()
+            return co2
+        except Exception as exc:
+            LOGGER.exception("Failed to read SCD41")
+            self.health.failed(str(exc))
+            self.events.log(logging.ERROR, "scd41", "read_failed", f"Failed to read SCD41: {exc}")
+            return None
+
+    def _handle_invalid_reading(self, co2: float) -> None:
+        self.invalid_streak += 1
+        self.health.failed(f"Invalid CO2 reading: {co2:.1f} ppm")
+        # Log the first bad reading of a streak, then once a minute, not every 10s.
+        if self.invalid_streak == 1 or self.invalid_streak % 6 == 0:
+            self.events.log(
+                logging.WARNING,
+                "scd41",
+                "invalid_measurement",
+                f"Invalid CO2 reading ignored: {co2:.1f} ppm ({self.invalid_streak} in a row)",
+                {"co2": co2, "invalid_streak": self.invalid_streak},
+            )
+        if self.invalid_streak >= self.config.scd41_reinit_after_invalid:
+            self.reinitialize()
+
+    def reinitialize(self) -> None:
+        """Restart the sensor after it gets stuck (e.g. keeps returning 0 ppm)."""
+        self.events.log(
+            logging.WARNING,
+            "scd41",
+            "auto_reinit",
+            f"Re-initializing SCD41 after {self.invalid_streak} invalid readings in a row",
+        )
+        try:
+            self.device.stop_periodic_measurement()
+            time.sleep(1.0)
+            self.device.reinit()
+            time.sleep(0.1)
+            self._start_measurement()
+        except Exception as exc:
+            LOGGER.exception("SCD41 re-initialization failed")
+            self.health.failed(f"Re-initialization failed: {exc}")
+            self.invalid_streak = 0  # avoid retrying every sample
+
+    def _trim_recent_samples(self, now: float) -> None:
+        window = self.config.calibration_window
+        while self.recent_valid_samples and now - self.recent_valid_samples[0][0] > window:
+            self.recent_valid_samples.popleft()
+
+    # --- Commands from the dashboard -------------------------------------
+
+    def runtime_seconds(self) -> Optional[int]:
+        if self.measurement_started_at is None:
+            return None
+        return int(time.monotonic() - self.measurement_started_at)
+
+    def check_calibration_preconditions(self, target_co2: int) -> Dict[str, Any]:
+        """Refuse a forced calibration unless the sensor is warmed up and stable."""
+        cfg = self.config
+        runtime = self.runtime_seconds() or 0
+        if runtime < cfg.calibration_min_runtime:
+            raise RuntimeError(
+                f"SCD41 must run for {cfg.calibration_min_runtime}s before calibration; "
+                f"current runtime is {runtime}s"
+            )
+        self._trim_recent_samples(time.monotonic())
+        samples = [ppm for _, ppm in self.recent_valid_samples]
+        if len(samples) < cfg.calibration_min_samples:
+            raise RuntimeError(
+                f"Not enough recent valid samples: need {cfg.calibration_min_samples}, have {len(samples)}"
+            )
+        spread = max(samples) - min(samples)
+        if spread > cfg.calibration_max_drift_ppm:
+            raise RuntimeError(
+                f"Readings not stable enough: spread is {spread:.1f} ppm, "
+                f"limit is {cfg.calibration_max_drift_ppm} ppm"
+            )
+        average = sum(samples) / len(samples)
+        if abs(average - target_co2) > cfg.calibration_max_reference_delta_ppm:
+            raise RuntimeError(
+                f"Readings average {average:.1f} ppm, too far from target {target_co2} ppm"
+            )
+        return {
+            "runtime_seconds": runtime,
+            "sample_count": len(samples),
+            "average_co2": round(average, 1),
+            "spread_co2": round(spread, 1),
+        }
+
+    def force_calibration(self, target_co2: int, persist: bool) -> int:
+        """Run forced recalibration. Returns the correction offset from the sensor."""
+        if self.device is None:
+            raise RuntimeError("SCD41 is not initialized")
+        self.device.stop_periodic_measurement()
+        time.sleep(1.0)
+        try:
+            correction = self.device.force_calibration(target_co2)
+            if correction == 0xFFFF:
+                raise RuntimeError("SCD41 rejected the forced calibration command (0xFFFF)")
+            if persist:
+                self.device.persist_settings()
+            return correction
+        finally:
+            self._start_measurement()
+
+    def set_asc(self, enabled: bool, persist: bool) -> bool:
+        """Enable/disable automatic self-calibration. Returns the applied value."""
+        if self.device is None:
+            raise RuntimeError("SCD41 is not initialized")
+        self.device.stop_periodic_measurement()
+        time.sleep(1.0)
+        try:
+            self.asc_enabled = enabled
+            self.device.self_calibration_enabled = enabled
+            self.asc_enabled = bool(self.device.self_calibration_enabled)
+            if persist:
+                self.device.persist_settings()
+            return self.asc_enabled
+        finally:
+            self._start_measurement()
+
+    def stop(self) -> None:
+        if self.device is None:
+            return
+        try:
+            self.device.stop_periodic_measurement()
+        except Exception:
+            LOGGER.exception("Failed to stop SCD41")
+
+
+class Sht41:
+    """SHT41 temperature and humidity sensor (I2C)."""
+
+    VALID_TEMPERATURE = (-40.0, 85.0)
+    VALID_HUMIDITY = (0.0, 100.0)
+
+    def __init__(self, i2c, events):
+        self.events = events
+        self.health = SensorHealth("sht41", events)
+        self.device = None
+        try:
+            self.device = adafruit_sht4x.SHT4x(i2c)
+            self.health.ok()
+        except Exception as exc:
+            LOGGER.exception("Failed to initialize SHT41")
+            self.device = None
+            self.health.failed(str(exc), available=False)
+
+    def read(self) -> Optional[Tuple[float, float]]:
+        """Return (temperature C, relative humidity %), or None."""
+        if self.device is None:
+            return None
+        try:
+            temp = float(self.device.temperature)
+            humid = float(self.device.relative_humidity)
+            if not (self.VALID_TEMPERATURE[0] <= temp <= self.VALID_TEMPERATURE[1]):
+                raise ValueError(f"Temperature out of range: {temp:.2f} C")
+            if not (self.VALID_HUMIDITY[0] <= humid <= self.VALID_HUMIDITY[1]):
+                raise ValueError(f"Humidity out of range: {humid:.2f} %")
+            self.health.ok()
+            return temp, humid
+        except Exception as exc:
+            LOGGER.exception("Failed to read SHT41")
+            self.health.failed(str(exc))
+            self.events.log(logging.ERROR, "sht41", "read_failed", f"Failed to read SHT41: {exc}")
+            return None
+
+
+class Sps30:
+    """SPS30 particulate matter sensor (I2C)."""
+
+    FIELDS = ("pm1", "pm25", "pm4", "pm10", "tps")
+
+    def __init__(self, i2c, config, events):
+        self.config = config
+        self.events = events
+        self.health = SensorHealth("sps30", events)
+        self.device = None
+        self.auto_cleaning_interval: Optional[int] = None
+        self.last_manual_clean_at: Optional[float] = None
+        try:
+            self.device = SPS30(i2c)
+            self.device.wakeup()
+            self.device.start_measurement()
+            self.auto_cleaning_interval = self.device.auto_cleaning_interval
+            self.health.ok()
+        except Exception as exc:
+            LOGGER.exception("Failed to initialize SPS30")
+            self.device = None
+            self.health.failed(str(exc), available=False)
+
+    def read(self) -> Optional[Dict[str, float]]:
+        """Return {"pm1": ..., "pm25": ..., "pm4": ..., "pm10": ..., "tps": ...}, or None."""
+        if self.device is None:
+            return None
+        try:
+            if not self.device.data_ready:
+                return None
+            data = self.device.read()
+            values = {}
+            for field in self.FIELDS:
+                value = float(data[field])
+                if value < 0:
+                    raise ValueError(f"{field} must not be negative")
+                values[field] = value
+            self.health.ok()
+            return values
+        except Exception as exc:
+            LOGGER.exception("Failed to read SPS30")
+            self.health.failed(str(exc))
+            self.events.log(logging.ERROR, "sps30", "read_failed", f"Failed to read SPS30: {exc}")
+            return None
+
+    def force_clean(self) -> None:
+        """Start a manual fan cleaning (rate-limited)."""
+        if self.device is None:
+            raise RuntimeError("SPS30 is not initialized")
+        now = time.monotonic()
+        cooldown = self.config.sps30_manual_clean_cooldown
+        if self.last_manual_clean_at is not None and now - self.last_manual_clean_at < cooldown:
+            remaining = int(cooldown - (now - self.last_manual_clean_at))
+            raise RuntimeError(f"Fan cleaning is rate-limited; wait another {remaining}s")
+        self.device.force_clean()
+        self.last_manual_clean_at = now
+        self.health.state["last_manual_clean_at"] = utc_now_iso()
+
+    def set_auto_cleaning_interval(self, seconds: int) -> None:
+        if self.device is None:
+            raise RuntimeError("SPS30 is not initialized")
+        self.device.auto_cleaning_interval = seconds
+        self.auto_cleaning_interval = seconds
+
+    def stop(self) -> None:
+        if self.device is None:
+            return
+        try:
+            self.device.stop_measurement()
+            self.device.sleep()
+        except Exception:
+            LOGGER.exception("Failed to stop SPS30")
